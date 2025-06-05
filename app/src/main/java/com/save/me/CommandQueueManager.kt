@@ -1,19 +1,20 @@
 package com.save.me
 
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import androidx.room.*
 import kotlinx.coroutines.*
-import java.util.*
-import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import org.json.JSONObject
 
 object CommandQueueManager {
     enum class ResourceGroup { CAMERA, MIC, LOCATION, NONE }
-    private val runningJobs = ConcurrentHashMap<ResourceGroup, Job>()
-    private val coroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private val handler = Handler(Looper.getMainLooper())
+
+    private val queueScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val resourceMutex = Mutex()
+    private val runningResources = mutableMapOf<ResourceGroup, String>() // Resource -> occupying command type (e.g. "video", "audio")
+    private val runningJobIds = mutableSetOf<Long>()
     private lateinit var appContext: Context
     private lateinit var dao: CommandQueueDao
     private var initialized = false
@@ -23,71 +24,77 @@ object CommandQueueManager {
         appContext = context.applicationContext
         dao = CommandQueueDatabase.getInstance(appContext).commandQueueDao()
         initialized = true
-        resumePendingCommands()
+        // No need to start a loop: everything is now handled on enqueue and job completion.
     }
 
     fun enqueue(command: QueuedCommand) {
-        coroutineScope.launch(Dispatchers.IO) {
+        queueScope.launch {
+            val needed = getResourceGroups(command.type)
+            val conflicting: Pair<ResourceGroup, String>? = resourceMutex.withLock {
+                needed.firstOrNull { res ->
+                    runningResources.containsKey(res) && runningResources[res] != null
+                }?.let { res ->
+                    Pair(res, runningResources[res] ?: "")
+                }
+            }
+            if (conflicting != null) {
+                // Resource is busy, deny command and notify
+                val (res, occupyingCommand) = conflicting
+                val deviceNickname = Preferences.getNickname(appContext) ?: "Device"
+                val msg =
+                    "[$deviceNickname] Resource busy: '${res.name}' is currently used by '${occupyingCommand}'. Your '${command.type}' command was denied. Try again after the current command finishes."
+                if (!command.chatId.isNullOrBlank()) {
+                    UploadManager.init(appContext)
+                    UploadManager.sendTelegramMessage(command.chatId, msg)
+                }
+                Log.w("CommandQueueManager", msg)
+                return@launch // Do not insert into queue
+            }
+
+            // No conflicts, lock resources and start command immediately
             val entity = CommandEntity.fromQueuedCommand(command)
-            dao.insert(entity)
-            tryRunCommands()
-        }
-    }
-
-    private fun tryRunCommands() {
-        coroutineScope.launch(Dispatchers.IO) {
-            val pending = dao.getAllPending()
-            for (cmd in pending) {
-                val group = getResourceGroup(cmd.type)
-                if (!runningJobs.containsKey(group)) {
-                    runCommand(cmd, group)
+            val id = dao.insert(entity)
+            resourceMutex.withLock {
+                needed.forEach { runningResources[it] = command.type }
+                runningJobIds.add(id)
+            }
+            queueScope.launch {
+                try {
+                    dao.updateStatus(id, "running")
+                    withContext(Dispatchers.IO) {
+                        ActionHandlers.executeCommand(appContext, command)
+                    }
+                    dao.updateStatus(id, "done")
+                } catch (e: Exception) {
+                    dao.updateStatus(id, "failed")
+                    Log.e("CommandQueueManager", "Command failed: ${command.type}", e)
+                } finally {
+                    resourceMutex.withLock {
+                        needed.forEach { runningResources.remove(it) }
+                        runningJobIds.remove(id)
+                    }
                 }
             }
         }
-    }
-
-    private fun runCommand(cmd: CommandEntity, group: ResourceGroup) {
-        val job = coroutineScope.launch {
-            dao.updateStatus(cmd.id, "running")
-            try {
-                ActionHandlers.executeCommand(appContext, cmd.toQueuedCommand())
-                dao.updateStatus(cmd.id, "done")
-            } catch (e: Exception) {
-                dao.updateStatus(cmd.id, "failed")
-                Log.e("CommandQueueManager", "Command failed: ${cmd.type}", e)
-            } finally {
-                runningJobs.remove(group)
-                tryRunCommands()
-            }
-        }
-        runningJobs[group] = job
-    }
-
-    private fun resumePendingCommands() {
-        coroutineScope.launch(Dispatchers.IO) {
-            val commands = dao.getAllPendingOrRunning()
-            for (cmd in commands) {
-                val group = getResourceGroup(cmd.type)
-                if (!runningJobs.containsKey(group)) {
-                    runCommand(cmd, group)
-                }
-            }
-        }
-    }
-
-    fun getResourceGroup(type: String): ResourceGroup = when (type) {
-        "photo", "video" -> ResourceGroup.CAMERA
-        "audio" -> ResourceGroup.MIC
-        "location" -> ResourceGroup.LOCATION
-        "ring", "vibrate" -> ResourceGroup.NONE
-        else -> ResourceGroup.NONE
     }
 
     fun clearAll() {
-        coroutineScope.launch(Dispatchers.IO) {
+        queueScope.launch {
             dao.clearAll()
-            runningJobs.clear()
+            resourceMutex.withLock {
+                runningResources.clear()
+                runningJobIds.clear()
+            }
         }
+    }
+
+    fun getResourceGroups(type: String): Set<ResourceGroup> = when (type) {
+        "photo" -> setOf(ResourceGroup.CAMERA)
+        "video" -> setOf(ResourceGroup.CAMERA, ResourceGroup.MIC)
+        "audio" -> setOf(ResourceGroup.MIC)
+        "location" -> setOf(ResourceGroup.LOCATION)
+        "ring", "vibrate" -> setOf(ResourceGroup.NONE)
+        else -> setOf(ResourceGroup.NONE)
     }
 }
 
