@@ -1,0 +1,25 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+        maven { url = 'https://jitpack.io' }
+    }
+    plugins {
+        id("org.jetbrains.kotlin.android") version "1.9.23"
+        id("org.jetbrains.kotlin.kapt") version "1.9.23"
+        // Do not include org.jetbrains.kotlin.plugin.compose (not needed for Android Compose)
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = 'https://jitpack.io' }
+    }
+}
+
+rootProject.name = "FindMyDevice"
+include ':app'

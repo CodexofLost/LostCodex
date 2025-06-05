@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">FindMyDevice</string>
+    <string name="permission_required">Permissions Required</string>
+    <string name="grant_permissions">Grant Permissions</string>
+    <string name="exit">Exit</string>
+    <string name="save_continue">Save &amp; Continue</string>
+    <string name="setup_device">Setup Device</string>
+    <string name="bot_token">Bot Token</string>
+    <string name="device_nickname">Device Nickname</string>
+    <string name="error_enter_both">Please enter both Bot Token and Nickname.</string>
+    <string name="permissions_needed">The app needs the following permissions:\n\n%s\n\nPlease grant them for best results.</string>
+</resources>
