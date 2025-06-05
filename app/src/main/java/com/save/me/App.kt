@@ -7,5 +7,6 @@ class App : Application() {
         super.onCreate()
         NotificationHelper.createChannel(this)
         UploadManager.init(this)
+        CommandManager.initialize(this)
     }
 }

