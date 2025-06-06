@@ -16,7 +16,7 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 
 object CommandManager {
-    enum class ResourceGroup { CAMERA, MIC, LOCATION }
+    enum class ResourceGroup { CAMERA, MIC }
 
     private val queueScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val resourceMutex = Mutex()
@@ -33,6 +33,10 @@ object CommandManager {
         initialized = true
         Log.d("CommandManager", "Initialized CommandManager in event-driven mode (resource release on recording/capture end)")
     }
+
+    // Only photo, video, audio are exclusive and must be queued/serialized
+    fun isExclusiveType(type: String): Boolean =
+        type == "photo" || type == "video" || type == "audio"
 
     fun dispatch(
         context: Context,
@@ -51,11 +55,16 @@ object CommandManager {
         }
 
         Log.d("CommandManager", "Dispatch called: type=$type, camera=$camera, flash=$flash, quality=$quality, duration=$duration, chatId=$chatId")
-        enqueue(
-            QueuedCommand(
-                type, camera, flash, quality, duration, chatId
+        if (isExclusiveType(type)) {
+            enqueue(
+                QueuedCommand(
+                    type, camera, flash, quality, duration, chatId
+                )
             )
-        )
+        } else {
+            // Non-exclusive commands (location, ring, vibrate) run immediately and in parallel
+            startOtherActionInvoke(context, type, duration, chatId, System.currentTimeMillis())
+        }
     }
 
     fun enqueue(command: QueuedCommand) {
@@ -202,30 +211,9 @@ object CommandManager {
                 )
                 deferred.await()
                 return
-            } else {
-                if (OverlayHelper.hasOverlayPermission(context)) {
-                    val deferred = CompletableDeferred<Unit>()
-                    OverlayHelper.showViewOverlay(context, callback = { overlayView ->
-                        if (overlayView == null) {
-                            Log.e("CommandManager", "Audio/location overlay creation failed.")
-                            onCommandActionComplete(commandId)
-                            deferred.complete(Unit)
-                            return@showViewOverlay
-                        }
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            OverlayHelper.removeOverlay(context, overlayView)
-                            startOtherActionInvoke(context, type, duration, chatId, commandId)
-                            deferred.complete(Unit)
-                        }, 400)
-                    }, overlaySizeDp = 64, offScreen = true)
-                    deferred.await()
-                    return
-                }
             }
-        } else {
-            startCameraActionInvoke(context, type, camera, flash, quality, duration, chatId, commandId)
         }
-        startOtherActionInvoke(context, type, duration, chatId, commandId)
+        startCameraActionInvoke(context, type, camera, flash, quality, duration, chatId, commandId)
     }
 
     private fun startCameraActionInvoke(
@@ -324,13 +312,12 @@ object CommandManager {
         return true
     }
 
+    // Only photo, video, audio are exclusive; location, ring, vibrate are non-exclusive (empty set)
     fun getResourceGroups(type: String): Set<ResourceGroup> = when (type) {
         "photo" -> setOf(ResourceGroup.CAMERA)
         "video" -> setOf(ResourceGroup.CAMERA, ResourceGroup.MIC)
         "audio" -> setOf(ResourceGroup.MIC)
-        "location" -> setOf(ResourceGroup.LOCATION)
-        // For actions that don't need exclusive access, return an empty set!
-        "ring", "vibrate" -> emptySet()
+        // location, ring, vibrate: empty set, i.e. non-exclusive
         else -> emptySet()
     }
 

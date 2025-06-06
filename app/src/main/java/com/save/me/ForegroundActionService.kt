@@ -20,7 +20,8 @@ import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 
 class ForegroundActionService : Service() {
-    private var job: Job? = null
+    private var exclusiveJob: Job? = null
+    private val parallelJobs = mutableSetOf<Job>()
     private var overlayView: View? = null
     private var surfaceHolder: SurfaceHolder? = null
 
@@ -35,23 +36,39 @@ class ForegroundActionService : Service() {
         val commandId = intent?.getLongExtra("command_id", -1L) ?: -1L
         Log.d("ForegroundActionService", "onStartCommand received: action=$action, chatId=$chatId, commandId=$commandId")
 
-        // Exclusive-resource actions (camera, mic) run one at a time
         if (isExclusiveAction(action)) {
-            if (job?.isActive == true) {
-                Log.w("ForegroundActionService", "Service is already running a command; ignoring new start command.")
+            if (exclusiveJob?.isActive == true) {
+                Log.w("ForegroundActionService", "Service is already running an exclusive command; ignoring new exclusive start command.")
                 return START_NOT_STICKY
             }
-            job = CoroutineScope(Dispatchers.IO).launch {
+            exclusiveJob = CoroutineScope(Dispatchers.IO).launch {
                 handleExclusiveAction(action, intent, chatId, commandId, startId)
             }
-        } else {
-            // Non-exclusive actions (vibrate, ring, location) can run in parallel
-            CoroutineScope(Dispatchers.IO).launch {
-                handleNonExclusiveAction(action, intent, chatId, commandId, startId)
+        } else if (isParallelAction(action)) {
+            // Each non-exclusive (parallel) action gets its own coroutine and does not block/cancel others
+            val job = CoroutineScope(Dispatchers.IO).launch {
+                handleParallelAction(action, intent, chatId, commandId, startId)
             }
+            synchronized(parallelJobs) { parallelJobs.add(job) }
+            job.invokeOnCompletion {
+                synchronized(parallelJobs) { parallelJobs.remove(job) }
+                // If this was the last running job and no exclusive job, stop service
+                if (exclusiveJob?.isActive != true && parallelJobs.isEmpty()) {
+                    stopSelf()
+                }
+            }
+        } else {
+            Log.w("ForegroundActionService", "Unknown or empty action '$action' sent to ForegroundActionService, stopping self.")
+            stopSelfResult(startId)
         }
         return START_NOT_STICKY
     }
+
+    private fun isExclusiveAction(action: String): Boolean =
+        action == "photo" || action == "video" || action == "audio"
+
+    private fun isParallelAction(action: String): Boolean =
+        action == "location" || action == "ring" || action == "vibrate"
 
     private suspend fun handleExclusiveAction(
         action: String,
@@ -68,8 +85,7 @@ class ForegroundActionService : Service() {
                     UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: Required permissions not granted for $action.")
                 }
                 if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
-                cleanupAndStop()
-                stopSelfResult(startId)
+                cleanupAndMaybeStop()
                 return
             }
             if (action == "photo" || action == "video") {
@@ -101,8 +117,7 @@ class ForegroundActionService : Service() {
                         UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: Unable to create camera surface for $action.")
                     }
                     if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
-                    cleanupAndStop()
-                    stopSelfResult(startId)
+                    cleanupAndMaybeStop()
                     return
                 }
             }
@@ -111,7 +126,6 @@ class ForegroundActionService : Service() {
                 "photo" -> handleCameraAction("photo", intent, chatId, commandId)
                 "video" -> handleCameraAction("video", intent, chatId, commandId)
                 "audio" -> handleAudioRecording(intent, chatId, commandId)
-                else -> Log.e("ForegroundActionService", "Unknown EXCLUSIVE action: $action")
             }
         } catch (e: Exception) {
             Log.e("ForegroundActionService", "Error in action $action", e)
@@ -121,13 +135,12 @@ class ForegroundActionService : Service() {
             }
             if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
         } finally {
-            job = null
-            cleanupAndStop()
-            stopSelfResult(startId)
+            exclusiveJob = null
+            cleanupAndMaybeStop()
         }
     }
 
-    private suspend fun handleNonExclusiveAction(
+    private suspend fun handleParallelAction(
         action: String,
         intent: Intent?,
         chatId: String?,
@@ -137,26 +150,19 @@ class ForegroundActionService : Service() {
         try {
             withContext(Dispatchers.Main) { showNotificationForAction(action) }
             when (action) {
+                "location" -> handleLocation(chatId, commandId)
                 "ring" -> handleRing(commandId)
                 "vibrate" -> handleVibrate(commandId)
-                "location" -> handleLocation(chatId, commandId)
-                else -> Log.e("ForegroundActionService", "Unknown NON-EXCLUSIVE action: $action")
             }
         } catch (e: Exception) {
-            Log.e("ForegroundActionService", "Error in action $action", e)
+            Log.e("ForegroundActionService", "Error in parallel action $action", e)
             if (chatId != null) {
                 val deviceNickname = Preferences.getNickname(this@ForegroundActionService) ?: "Device"
                 UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: Exception in $action: ${formatDateTime(System.currentTimeMillis())}.")
             }
             if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
-        } finally {
-            cleanupAndStop()
-            stopSelfResult(startId)
         }
     }
-
-    private fun isExclusiveAction(action: String): Boolean =
-        action == "photo" || action == "video" || action == "audio"
 
     private fun checkPermissionsForAction(action: String): Boolean {
         fun has(p: String) = ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
@@ -313,19 +319,27 @@ class ForegroundActionService : Service() {
     }
 
     override fun onDestroy() {
-        job?.cancel()
-        job = null
-        cleanupAndStop()
+        exclusiveJob?.cancel()
+        exclusiveJob = null
+        synchronized(parallelJobs) {
+            parallelJobs.forEach { it.cancel() }
+            parallelJobs.clear()
+        }
+        cleanupAndMaybeStop(force = true)
         super.onDestroy()
     }
 
-    private fun cleanupAndStop() {
+    private fun cleanupAndMaybeStop(force: Boolean = false) {
         if (Build.VERSION.SDK_INT >= 34) {
             try {
                 overlayView?.let { OverlayHelper.removeOverlay(this, it) }
             } catch (_: Exception) {}
             surfaceHolder = null
             overlayView = null
+        }
+        // Stop the service if nothing is running, or if forced (onDestroy)
+        if (force || (exclusiveJob == null && parallelJobs.isEmpty())) {
+            stopSelf()
         }
     }
 
@@ -350,7 +364,7 @@ class ForegroundActionService : Service() {
                 startForeground(1, notification, type)
             } catch (e: SecurityException) {
                 Log.e("ForegroundActionService", "SecurityException: ${e.message}")
-                cleanupAndStop()
+                cleanupAndMaybeStop(force = true)
                 stopSelf()
                 return
             }
