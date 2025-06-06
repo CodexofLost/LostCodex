@@ -3,11 +3,7 @@ package com.save.me
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
-import android.view.SurfaceHolder
-import android.view.View
 import androidx.core.content.ContextCompat
 import androidx.room.*
 import kotlinx.coroutines.*
@@ -161,6 +157,7 @@ object CommandManager {
         val (type, camera, flash, quality, duration, chatId) = command
         val deviceNickname = Preferences.getNickname(context) ?: "Device"
 
+        // Only check permissions here. Do NOT create overlays or SurfaceHolders outside the service!
         if (!checkPermissions(context, type)) {
             Log.e("CommandManager", "Required permissions not granted for $type")
             NotificationHelper.showNotification(
@@ -174,45 +171,22 @@ object CommandManager {
             onCommandActionComplete(commandId)
             return
         }
-
-        if (Build.VERSION.SDK_INT >= 34) {
-            if (type == "photo" || type == "video") {
-                if (!OverlayHelper.hasOverlayPermission(context)) {
-                    OverlayHelper.requestOverlayPermission(context)
-                    NotificationHelper.showNotification(
-                        context,
-                        "Permission Needed",
-                        "Grant 'Display over other apps' for full background capability."
-                    )
-                    // Free resources if permission not granted
-                    onCommandActionComplete(commandId)
-                    return
-                }
-                val deferred = CompletableDeferred<Unit>()
-                OverlayHelper.showSurfaceOverlay(
+        // For photo/video, also check overlay permission, but do not create overlays here!
+        if ((type == "photo" || type == "video") && Build.VERSION.SDK_INT >= 34) {
+            if (!OverlayHelper.hasOverlayPermission(context)) {
+                OverlayHelper.requestOverlayPermission(context)
+                NotificationHelper.showNotification(
                     context,
-                    callback = { surfaceHolder, overlayView ->
-                        startCameraActionInvoke(
-                            context,
-                            type,
-                            camera,
-                            flash,
-                            quality,
-                            duration,
-                            chatId,
-                            commandId,
-                            surfaceHolder,
-                            overlayView
-                        )
-                        deferred.complete(Unit)
-                    },
-                    overlaySizeDp = 64,
-                    offScreen = true
+                    "Permission Needed",
+                    "Grant 'Display over other apps' for full background capability."
                 )
-                deferred.await()
+                // Free resources if permission not granted
+                onCommandActionComplete(commandId)
                 return
             }
         }
+
+        // Start ForegroundActionService with parameters only!
         startCameraActionInvoke(context, type, camera, flash, quality, duration, chatId, commandId)
     }
 
@@ -224,9 +198,7 @@ object CommandManager {
         quality: String?,
         duration: String?,
         chatId: String?,
-        commandId: Long,
-        surfaceHolder: SurfaceHolder? = null,
-        overlayView: View? = null
+        commandId: Long
     ) {
         val cam = camera ?: "front"
         val flashEnabled = flash == "true"

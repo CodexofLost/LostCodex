@@ -2,109 +2,130 @@
 # ProGuard rules for FindMyDevice app
 # ----------------------------------------
 
-# Keep the main application class
+# Keep all classes, methods, and fields inside your app package (prevents obfuscation/removal)
 -keep class com.save.me.** { *; }
 
 # --- AndroidX and Jetpack (safe defaults) ---
+# Keep all AndroidX classes and ignore warnings
 -keep class androidx.** { *; }
 -dontwarn androidx.**
 
-# --- Keep classes for Gson/Retrofit/OkHttp (for JSON serialization/deserialization) ---
+# --- Gson, Retrofit, OkHttp ---
+# Keep everything related to Gson (used for JSON serialization/deserialization)
 -keep class com.google.gson.** { *; }
+# Keep everything for Retrofit (HTTP client)
 -keep class retrofit2.** { *; }
+# Keep everything for OkHttp (underlying HTTP library)
 -keep class okhttp3.** { *; }
+# Ignore warnings from Retrofit, OkHttp, and okio (dependency of OkHttp)
 -dontwarn retrofit2.**
 -dontwarn okhttp3.**
 -dontwarn okio.**
 
-# --- Room (Database ORM) ---
+# --- Room Database ---
+# Keep Room database classes
 -keep class androidx.room.** { *; }
+# Keep classes annotated with Room annotations (like @Entity, @Dao, etc.)
 -keep @androidx.room.* class * { *; }
+# Keep Room database classes extending RoomDatabase
 -keep class * extends androidx.room.RoomDatabase { *; }
+# Keep class members (methods/fields) annotated by Room
 -keepclassmembers class * {
     @androidx.room.* <methods>;
     @androidx.room.* <fields>;
 }
 
-# --- Parcelable/Parcelize (Kotlin) ---
+# --- Kotlin Parcelable support ---
+# Keep Kotlin Parcelize (serialization)
 -keep class kotlinx.parcelize.** { *; }
+# Keep members required for Parcelable implementations
 -keepclassmembers class * implements android.os.Parcelable {
     static ** CREATOR;
 }
 
-# --- Keep for Kotlin Reflection, Coroutines, and Compose ---
+# --- Kotlin core, coroutines, and Jetpack Compose ---
+# Keep all Kotlin classes
 -keep class kotlin.** { *; }
 -dontwarn kotlin.**
+# Keep and ignore warnings for Kotlin coroutines
 -keepclassmembers class kotlinx.coroutines.** { *; }
 -dontwarn kotlinx.coroutines.**
+# Keep and ignore warnings for Jetpack Compose classes
 -keep class androidx.compose.** { *; }
 -dontwarn androidx.compose.**
 
-# --- Keep for LeakCanary (for debug builds, safe to ignore in release) ---
+# --- LeakCanary (used in debug only, safe to suppress in release) ---
 -dontwarn com.squareup.leakcanary.**
 
 # --- Firebase and Google Play Services ---
+# Keep and suppress warnings for Firebase-related classes
 -keep class com.google.firebase.** { *; }
 -dontwarn com.google.firebase.**
+# Keep and suppress warnings for Google Play Services classes
 -keep class com.google.android.gms.** { *; }
 -dontwarn com.google.android.gms.**
 
 # --- Telegram Bot API (Pengrad) ---
+# Keep and suppress warnings for Telegram Bot API client
 -keep class com.pengrad.telegrambot.** { *; }
 -dontwarn com.pengrad.telegrambot.**
 
-# --- General keep rules for App Activities, Services, and BroadcastReceivers ---
+# --- Core Android Components ---
+# Keep all custom Activity, Service, BroadcastReceiver, and ContentProvider subclasses
 -keep public class * extends android.app.Activity
 -keep public class * extends android.app.Service
 -keep public class * extends android.content.BroadcastReceiver
 -keep public class * extends android.content.ContentProvider
 
-# --- Keep all annotations (sometimes needed for Room, Gson, etc.) ---
+# --- Keep all annotations ---
+# Needed for libraries like Room, Gson, Retrofit
 -keepattributes *Annotation*
 
-# --- Keep for Gson - keep fields with @SerializedName ---
+# --- Ensure Gson works with @SerializedName fields ---
 -keepclassmembers class * {
     @com.google.gson.annotations.SerializedName <fields>;
 }
 
-# --- For okio (used by OkHttp/Retrofit) ---
+# --- okio (used under-the-hood by OkHttp/Retrofit) ---
 -dontwarn okio.**
 
-# --- If using Coil (image loader) ---
+# --- Coil (Kotlin image loader) ---
+# Keep and suppress warnings if using Coil
 -keep class coil.** { *; }
 -dontwarn coil.**
 
-# --- If using Jetpack Compose ---
+# --- Jetpack Compose support (UI toolkit) ---
+# Keep and suppress warnings for Compose
 -keep class androidx.compose.** { *; }
 -dontwarn androidx.compose.**
 
-# --- Remove logging in release (optional, can reduce APK size) ---
+# --- Remove logs in release build (to reduce APK size and prevent log leaking) ---
 -assumenosideeffects class android.util.Log {
-    public static *** d(...);
-    public static *** v(...);
-    public static *** i(...);
-    public static *** w(...);
-    public static *** e(...);
+    public static *** d(...);  # Debug logs
+    public static *** v(...);  # Verbose logs
+    public static *** i(...);  # Info logs
+    public static *** w(...);  # Warning logs
+    public static *** e(...);  # Error logs
 }
 
-# --- If using WorkManager ---
+# --- WorkManager support ---
 -keep class androidx.work.** { *; }
 -dontwarn androidx.work.**
 
-# --- If using Paging ---
+# --- Paging library support ---
 -keep class androidx.paging.** { *; }
 -dontwarn androidx.paging.**
 
-# --- If using Navigation Compose ---
+# --- Navigation Compose support ---
 -keep class androidx.navigation.** { *; }
 -dontwarn androidx.navigation.**
 
-# --- If using Security Crypto ---
+# --- AndroidX Security (EncryptedSharedPreferences, etc.) ---
 -keep class androidx.security.** { *; }
 -dontwarn androidx.security.**
 
-# --- General safe fallback (optional, for troubleshooting) ---
-# -dontoptimize
-# -dontpreverify
+# --- Optional debugging switches (for troubleshooting builds) ---
+# -dontoptimize      # Disable optimizations (only for debug)
+# -dontpreverify     # Disable class verification (older Androids)
 
 # --- End of ProGuard rules ---

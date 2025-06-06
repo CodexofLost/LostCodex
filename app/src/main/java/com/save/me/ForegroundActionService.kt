@@ -20,8 +20,7 @@ import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 
 class ForegroundActionService : Service() {
-    private var exclusiveJob: Job? = null
-    private val parallelJobs = mutableSetOf<Job>()
+    private var job: Job? = null
     private var overlayView: View? = null
     private var surfaceHolder: SurfaceHolder? = null
 
@@ -35,155 +34,68 @@ class ForegroundActionService : Service() {
         val chatId = intent?.getStringExtra("chat_id")
         val commandId = intent?.getLongExtra("command_id", -1L) ?: -1L
         Log.d("ForegroundActionService", "onStartCommand received: action=$action, chatId=$chatId, commandId=$commandId")
-
-        if (isExclusiveAction(action)) {
-            if (exclusiveJob?.isActive == true) {
-                Log.w("ForegroundActionService", "Service is already running an exclusive command; ignoring new exclusive start command.")
-                return START_NOT_STICKY
-            }
-            exclusiveJob = CoroutineScope(Dispatchers.IO).launch {
-                handleExclusiveAction(action, intent, chatId, commandId, startId)
-            }
-        } else if (isParallelAction(action)) {
-            // Each non-exclusive (parallel) action gets its own coroutine and does not block/cancel others
-            val job = CoroutineScope(Dispatchers.IO).launch {
-                handleParallelAction(action, intent, chatId, commandId, startId)
-            }
-            synchronized(parallelJobs) { parallelJobs.add(job) }
-            job.invokeOnCompletion {
-                synchronized(parallelJobs) { parallelJobs.remove(job) }
-                // If this was the last running job and no exclusive job, stop service
-                if (exclusiveJob?.isActive != true && parallelJobs.isEmpty()) {
-                    stopSelf()
+        job?.cancel()
+        job = CoroutineScope(Dispatchers.IO).launch {
+            try {
+                if (action == "photo" || action == "video") {
+                    val holder = CompletableDeferred<SurfaceHolder?>()
+                    withContext(Dispatchers.Main) {
+                        OverlayHelper.showSurfaceOverlay(this@ForegroundActionService, { holderReady, overlay ->
+                            overlayView = overlay
+                            if (holderReady?.surface?.isValid == true) {
+                                holder.complete(holderReady)
+                            } else if (overlay is FrameLayout && overlay.childCount > 0 && overlay.getChildAt(0) is SurfaceView) {
+                                val sv = overlay.getChildAt(0) as SurfaceView
+                                sv.holder.addCallback(object : SurfaceHolder.Callback {
+                                    override fun surfaceCreated(sh: SurfaceHolder) {
+                                        holder.complete(sh)
+                                    }
+                                    override fun surfaceChanged(sh: SurfaceHolder, f: Int, w: Int, h: Int) {}
+                                    override fun surfaceDestroyed(sh: SurfaceHolder) {}
+                                })
+                            } else {
+                                holder.complete(null)
+                            }
+                        })
+                    }
+                    surfaceHolder = withTimeoutOrNull(2000) { holder.await() }
+                    if (surfaceHolder == null) {
+                        Log.e("ForegroundActionService", "SurfaceHolder not ready, cannot proceed.")
+                        if (chatId != null) {
+                            val deviceNickname = Preferences.getNickname(this@ForegroundActionService) ?: "Device"
+                            UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: Unable to create camera surface for $action.")
+                        }
+                        if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
+                        cleanupAndStop()
+                        return@launch
+                    }
                 }
-            }
-        } else {
-            Log.w("ForegroundActionService", "Unknown or empty action '$action' sent to ForegroundActionService, stopping self.")
-            stopSelfResult(startId)
-        }
-        return START_NOT_STICKY
-    }
 
-    private fun isExclusiveAction(action: String): Boolean =
-        action == "photo" || action == "video" || action == "audio"
+                withContext(Dispatchers.Main) {
+                    showNotificationForAction(action)
+                }
 
-    private fun isParallelAction(action: String): Boolean =
-        action == "location" || action == "ring" || action == "vibrate"
-
-    private suspend fun handleExclusiveAction(
-        action: String,
-        intent: Intent?,
-        chatId: String?,
-        commandId: Long,
-        startId: Int
-    ) {
-        try {
-            if (!checkPermissionsForAction(action)) {
-                Log.e("ForegroundActionService", "Missing permissions for $action")
+                when (action) {
+                    "photo" -> handleCameraAction("photo", intent, chatId, commandId)
+                    "video" -> handleCameraAction("video", intent, chatId, commandId)
+                    "audio" -> handleAudioRecording(intent, chatId, commandId)
+                    "location" -> handleLocation(chatId, commandId)
+                    "ring" -> handleRing(commandId)
+                    "vibrate" -> handleVibrate(commandId)
+                    else -> Log.e("ForegroundActionService", "Unknown action: $action")
+                }
+            } catch (e: Exception) {
+                Log.e("ForegroundActionService", "Error in action $action", e)
                 if (chatId != null) {
                     val deviceNickname = Preferences.getNickname(this@ForegroundActionService) ?: "Device"
-                    UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: Required permissions not granted for $action.")
+                    UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: Exception in $action: ${formatDateTime(System.currentTimeMillis())}.")
                 }
                 if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
-                cleanupAndMaybeStop()
-                return
+            } finally {
+                cleanupAndStop()
             }
-            if (action == "photo" || action == "video") {
-                val holder = CompletableDeferred<SurfaceHolder?>()
-                withContext(Dispatchers.Main) {
-                    OverlayHelper.showSurfaceOverlay(this@ForegroundActionService, { holderReady, overlay ->
-                        overlayView = overlay
-                        if (holderReady?.surface?.isValid == true) {
-                            holder.complete(holderReady)
-                        } else if (overlay is FrameLayout && overlay.childCount > 0 && overlay.getChildAt(0) is SurfaceView) {
-                            val sv = overlay.getChildAt(0) as SurfaceView
-                            sv.holder.addCallback(object : SurfaceHolder.Callback {
-                                override fun surfaceCreated(sh: SurfaceHolder) {
-                                    holder.complete(sh)
-                                }
-                                override fun surfaceChanged(sh: SurfaceHolder, f: Int, w: Int, h: Int) {}
-                                override fun surfaceDestroyed(sh: SurfaceHolder) {}
-                            })
-                        } else {
-                            holder.complete(null)
-                        }
-                    })
-                }
-                surfaceHolder = withTimeoutOrNull(2000) { holder.await() }
-                if (surfaceHolder == null) {
-                    Log.e("ForegroundActionService", "SurfaceHolder not ready, cannot proceed.")
-                    if (chatId != null) {
-                        val deviceNickname = Preferences.getNickname(this@ForegroundActionService) ?: "Device"
-                        UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: Unable to create camera surface for $action.")
-                    }
-                    if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
-                    cleanupAndMaybeStop()
-                    return
-                }
-            }
-            withContext(Dispatchers.Main) { showNotificationForAction(action) }
-            when (action) {
-                "photo" -> handleCameraAction("photo", intent, chatId, commandId)
-                "video" -> handleCameraAction("video", intent, chatId, commandId)
-                "audio" -> handleAudioRecording(intent, chatId, commandId)
-            }
-        } catch (e: Exception) {
-            Log.e("ForegroundActionService", "Error in action $action", e)
-            if (chatId != null) {
-                val deviceNickname = Preferences.getNickname(this@ForegroundActionService) ?: "Device"
-                UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: Exception in $action: ${formatDateTime(System.currentTimeMillis())}.")
-            }
-            if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
-        } finally {
-            exclusiveJob = null
-            cleanupAndMaybeStop()
         }
-    }
-
-    private suspend fun handleParallelAction(
-        action: String,
-        intent: Intent?,
-        chatId: String?,
-        commandId: Long,
-        startId: Int
-    ) {
-        try {
-            withContext(Dispatchers.Main) { showNotificationForAction(action) }
-            when (action) {
-                "location" -> handleLocation(chatId, commandId)
-                "ring" -> handleRing(commandId)
-                "vibrate" -> handleVibrate(commandId)
-            }
-        } catch (e: Exception) {
-            Log.e("ForegroundActionService", "Error in parallel action $action", e)
-            if (chatId != null) {
-                val deviceNickname = Preferences.getNickname(this@ForegroundActionService) ?: "Device"
-                UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: Exception in $action: ${formatDateTime(System.currentTimeMillis())}.")
-            }
-            if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
-        }
-    }
-
-    private fun checkPermissionsForAction(action: String): Boolean {
-        fun has(p: String) = ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
-        return when (action) {
-            "photo" ->
-                has(android.Manifest.permission.CAMERA) &&
-                        (Build.VERSION.SDK_INT < 34 || has(android.Manifest.permission.FOREGROUND_SERVICE_CAMERA))
-            "video" ->
-                has(android.Manifest.permission.CAMERA) &&
-                        has(android.Manifest.permission.RECORD_AUDIO) &&
-                        (Build.VERSION.SDK_INT < 34 || has(android.Manifest.permission.FOREGROUND_SERVICE_CAMERA)) &&
-                        (Build.VERSION.SDK_INT < 34 || has(android.Manifest.permission.FOREGROUND_SERVICE_MICROPHONE))
-            "audio" ->
-                has(android.Manifest.permission.RECORD_AUDIO) &&
-                        (Build.VERSION.SDK_INT < 34 || has(android.Manifest.permission.FOREGROUND_SERVICE_MICROPHONE))
-            "location" ->
-                (has(android.Manifest.permission.ACCESS_FINE_LOCATION) ||
-                        has(android.Manifest.permission.ACCESS_COARSE_LOCATION)) &&
-                        (Build.VERSION.SDK_INT < 34 || has(android.Manifest.permission.FOREGROUND_SERVICE_LOCATION))
-            else -> true
-        }
+        return START_NOT_STICKY
     }
 
     private suspend fun handleCameraAction(type: String, intent: Intent?, chatId: String?, commandId: Long) {
@@ -319,27 +231,18 @@ class ForegroundActionService : Service() {
     }
 
     override fun onDestroy() {
-        exclusiveJob?.cancel()
-        exclusiveJob = null
-        synchronized(parallelJobs) {
-            parallelJobs.forEach { it.cancel() }
-            parallelJobs.clear()
-        }
-        cleanupAndMaybeStop(force = true)
+        job?.cancel()
+        cleanupAndStop()
         super.onDestroy()
     }
 
-    private fun cleanupAndMaybeStop(force: Boolean = false) {
+    private fun cleanupAndStop() {
         if (Build.VERSION.SDK_INT >= 34) {
             try {
                 overlayView?.let { OverlayHelper.removeOverlay(this, it) }
             } catch (_: Exception) {}
             surfaceHolder = null
             overlayView = null
-        }
-        // Stop the service if nothing is running, or if forced (onDestroy)
-        if (force || (exclusiveJob == null && parallelJobs.isEmpty())) {
-            stopSelf()
         }
     }
 
@@ -364,7 +267,7 @@ class ForegroundActionService : Service() {
                 startForeground(1, notification, type)
             } catch (e: SecurityException) {
                 Log.e("ForegroundActionService", "SecurityException: ${e.message}")
-                cleanupAndMaybeStop(force = true)
+                cleanupAndStop()
                 stopSelf()
                 return
             }
@@ -385,7 +288,7 @@ class ForegroundActionService : Service() {
         fun stop(context: Context) {
             context.stopService(Intent(context, ForegroundActionService::class.java))
         }
-        fun isRunning(context: Context): Boolean = false
+        fun isRunning(context: Context): Boolean = false // Not used in this pattern
 
         fun startCameraAction(
             context: Context,
