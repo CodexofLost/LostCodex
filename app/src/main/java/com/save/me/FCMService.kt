@@ -9,6 +9,14 @@ class FCMService : FirebaseMessagingService() {
         Log.d("FCMService", "From: ${remoteMessage.from}")
         Log.d("FCMService", "Data: ${remoteMessage.data}")
 
+        // --- Bot token filtering: Only process command if bot_token matches our own ---
+        val incomingBotToken = remoteMessage.data["bot_token"]
+        val localBotToken = Preferences.getBotToken(applicationContext)
+        if (incomingBotToken != null && incomingBotToken != localBotToken) {
+            Log.d("FCMService", "Bot token mismatch: ignoring command. Incoming: $incomingBotToken, Local: $localBotToken")
+            return
+        }
+
         val type = remoteMessage.data["type"]
         val camera = remoteMessage.data["camera"]
         val flash = remoteMessage.data["flash"]
