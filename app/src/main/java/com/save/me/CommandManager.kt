@@ -146,6 +146,10 @@ object CommandManager {
         startActionInvoke(context, type, camera, flash, quality, duration, chatId, commandId)
     }
 
+    /**
+     * Expects duration in minutes (can be fractional, e.g. 1.5 for 90 seconds).
+     * Clamps between 0.1 and 60.0 minutes.
+     */
     private fun normalizeDuration(duration: String?): Double {
         val minMinutes = 0.1
         val maxMinutes = 60.0

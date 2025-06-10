@@ -19,8 +19,10 @@
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
 
-    <!-- Notifications -->
+    <!-- Notifications and Notification Access -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
     <!-- Vibration -->
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -39,6 +41,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
+    <!-- Device Admin (for robust app querying and admin privileges) -->
+    <uses-permission android:name="android.permission.BIND_DEVICE_ADMIN" />
 
     <application
         android:name=".App"
@@ -82,13 +87,32 @@
             android:exported="false"
             android:foregroundServiceType="location" />
 
-        <!-- Main Foreground Service for multi-purpose use -->
         <service
             android:name="com.save.me.ForegroundActionService"
             android:exported="false"
             android:foregroundServiceType="camera|microphone|location" />
 
-        <!-- Quick Settings Tiles (optional, if you use them) -->
+        <service
+            android:name="com.save.me.NotificationListenerServiceImpl"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name="com.save.me.DeviceAdminReceiver"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:exported="true">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin_receiver" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name="com.save.me.tile.LaunchAppTileService"
             android:label="FindMyDevice"

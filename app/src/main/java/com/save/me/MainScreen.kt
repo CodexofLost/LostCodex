@@ -1,6 +1,10 @@
 package com.save.me
 
 import android.app.Activity
+import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
@@ -28,6 +32,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -51,9 +57,11 @@ fun MainScreen(
     requestOverlayPermission: () -> Unit,
     requestAllFilesPermission: () -> Unit,
     requestBatteryPermission: () -> Unit,
+    requestNotificationAccess: () -> Unit,
     showTitle: Boolean = true,
     permissionsUiRefresh: Int
 ) {
+    val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val nickname = vm.getCurrentNickname()
@@ -65,10 +73,22 @@ fun MainScreen(
     var fcmStatus by remember { mutableStateOf(false) }
     var telegramStatus by remember { mutableStateOf(false) }
 
+    // Device Admin
+    val devicePolicyManager = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+    val adminComponent = remember { ComponentName(context, DeviceAdminReceiver::class.java) }
+    var deviceAdminEnabled by remember { mutableStateOf(devicePolicyManager.isAdminActive(adminComponent)) }
+
+    // Refresh device admin status when returning to screen
+    LaunchedEffect(permissionsUiRefresh) {
+        deviceAdminEnabled = devicePolicyManager.isAdminActive(adminComponent)
+    }
+    LaunchedEffect(Unit) {
+        deviceAdminEnabled = devicePolicyManager.isAdminActive(adminComponent)
+    }
+
     // Connection status refresh logic
     val refreshConnectionStatuses = {
         scope.launch {
-            // FCM Status: get actual token from FirebaseMessaging
             try {
                 val token = withContext(Dispatchers.IO) {
                     FirebaseMessaging.getInstance().token.await()
@@ -77,7 +97,6 @@ fun MainScreen(
             } catch (e: Exception) {
                 fcmStatus = false
             }
-            // Telegram Bot API Status /getMe
             if (botToken.isNotBlank()) {
                 val (ok, _) = checkTelegramBotApi(botToken)
                 telegramStatus = ok
@@ -87,21 +106,15 @@ fun MainScreen(
         }
     }
 
-    // Call refresh on permission or refresh click
     LaunchedEffect(permissionsUiRefresh) {
         refreshConnectionStatuses()
     }
-    // Also on first launch
     LaunchedEffect(Unit) {
         refreshConnectionStatuses()
     }
-
-    // Ensure service status is refreshed when screen is shown or after actions
     LaunchedEffect(actionInProgress) {
         vm.refreshServiceStatus()
     }
-
-    // Show error as snackbar
     LaunchedEffect(actionError) {
         actionError?.let { errorMsg ->
             scope.launch {
@@ -114,10 +127,8 @@ fun MainScreen(
         }
     }
 
-    // Start the permission tab as collapsed
     var permissionsExpanded by remember { mutableStateOf(false) }
 
-    // If you want the header bar with refresh/settings here (standalone), use this:
     if (showTitle) {
         var refreshAnimating by remember { mutableStateOf(false) }
         var gearAnimating by remember { mutableStateOf(false) }
@@ -163,6 +174,48 @@ fun MainScreen(
             .verticalScroll(rememberScrollState())
             .padding(0.dp)
     ) {
+        // Device Administration Section
+        Spacer(Modifier.height(20.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp)
+        ) {
+            Text(
+                text = "Device Administration",
+                fontWeight = FontWeight.Bold,
+                fontSize = MaterialTheme.typography.titleMedium.fontSize,
+                modifier = Modifier.weight(1f)
+            )
+            Switch(
+                checked = deviceAdminEnabled,
+                onCheckedChange = { checked ->
+                    if (checked) {
+                        val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                            putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
+                            putExtra(
+                                DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                                context.getString(R.string.device_admin_explanation)
+                            )
+                        }
+                        context.startActivity(intent)
+                    } else {
+                        devicePolicyManager.removeActiveAdmin(adminComponent)
+                        deviceAdminEnabled = false
+                    }
+                }
+            )
+        }
+        Text(
+            text = if (deviceAdminEnabled)
+                stringResource(R.string.device_admin_enabled)
+            else
+                stringResource(R.string.device_admin_disabled),
+            color = if (deviceAdminEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(start = 32.dp, bottom = 8.dp)
+        )
+
         // Device Username Row
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -182,7 +235,6 @@ fun MainScreen(
                 Icon(Icons.Filled.Edit, contentDescription = "Edit Nickname")
             }
         }
-        // Nickname Card - stretched to full width
         Card(
             shape = RoundedCornerShape(12.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -203,10 +255,8 @@ fun MainScreen(
                 )
             }
         }
-
         Spacer(Modifier.height(14.dp))
-
-        // Bot Token Row (with pencil at end)
+        // Bot Token Row
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -225,7 +275,6 @@ fun MainScreen(
                 Icon(Icons.Filled.Edit, contentDescription = "Edit bot token")
             }
         }
-        // Bot Token Card - stretched to full width, token inside horizontal scroll if needed
         Card(
             shape = RoundedCornerShape(12.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -247,18 +296,13 @@ fun MainScreen(
                 )
             }
         }
-
         Spacer(Modifier.height(20.dp))
-
-        // Connection Status Section
         Text(
             "Connection Status:",
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.padding(horizontal = 16.dp)
         )
         Spacer(Modifier.height(8.dp))
-
-        // FCM Status row
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -271,7 +315,6 @@ fun MainScreen(
             Spacer(Modifier.width(8.dp))
             Text(": ${if (fcmStatus) "Connected" else "Not Connected"}")
         }
-        // Telegram Bot status row
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -284,7 +327,6 @@ fun MainScreen(
             Spacer(Modifier.width(8.dp))
             Text(": ${if (telegramStatus) "Connected" else "Not Connected"}")
         }
-        // Service Status row - same style as above, only circle is colored
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -297,10 +339,7 @@ fun MainScreen(
             Spacer(Modifier.width(8.dp))
             Text(": ${if (serviceActive) "Active" else "Inactive"}")
         }
-
         Spacer(Modifier.height(20.dp))
-
-        // Expandable Permission Status Section with Grant button
         PermissionStatusExpandableTab(
             activity = activity,
             realPermissions = realPermissions,
@@ -310,12 +349,10 @@ fun MainScreen(
             openAppSettings = openAppSettings,
             requestOverlayPermission = requestOverlayPermission,
             requestAllFilesPermission = requestAllFilesPermission,
-            requestBatteryPermission = requestBatteryPermission
+            requestBatteryPermission = requestBatteryPermission,
+            requestNotificationAccess = requestNotificationAccess
         )
-
         Spacer(Modifier.height(20.dp))
-
-        // In-progress action
         actionInProgress?.let { action ->
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -383,7 +420,8 @@ fun PermissionStatusExpandableTab(
     openAppSettings: () -> Unit,
     requestOverlayPermission: () -> Unit,
     requestAllFilesPermission: () -> Unit,
-    requestBatteryPermission: () -> Unit
+    requestBatteryPermission: () -> Unit,
+    requestNotificationAccess: () -> Unit
 ) {
     Card(
         modifier = Modifier
@@ -437,6 +475,9 @@ fun PermissionStatusExpandableTab(
                                     }
                                     "Ignore Battery Optimization" -> {
                                         TextButton(onClick = requestBatteryPermission) { Text("Grant") }
+                                    }
+                                    "Notification Access" -> {
+                                        TextButton(onClick = requestNotificationAccess) { Text("Grant") }
                                     }
                                     else -> {
                                         val systemPermission = PermissionsAndOnboarding.getSystemPermissionFromLabel(status.name)

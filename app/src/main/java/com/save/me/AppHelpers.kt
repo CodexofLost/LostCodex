@@ -124,6 +124,28 @@ object PermissionsAndOnboarding {
         }
     }
 
+    /**
+     * Checks if the notification listener access is granted for this app.
+     * This method is robust and works across devices and Android versions.
+     */
+    fun hasNotificationListenerAccess(context: Context): Boolean {
+        val pkgName = context.packageName
+        val enabledListeners = Settings.Secure.getString(
+            context.contentResolver,
+            "enabled_notification_listeners"
+        )
+        if (!enabledListeners.isNullOrEmpty()) {
+            val colonSplitter = enabledListeners.split(":")
+            for (component in colonSplitter) {
+                // Sometimes the component is "package/class"
+                if (component.startsWith(pkgName + "/")) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
     fun getAllPermissionStatuses(context: Context): List<PermissionStatus> {
         val perms = getAllStandardPermissions(context)
         val statuses = perms.map { perm ->
@@ -133,6 +155,12 @@ object PermissionsAndOnboarding {
             )
         }.toMutableList()
 
+        statuses.add(
+            PermissionStatus(
+                name = "Notification Access",
+                granted = hasNotificationListenerAccess(context)
+            )
+        )
         statuses.add(
             PermissionStatus(
                 name = "Overlay (Draw over apps)",
@@ -158,6 +186,11 @@ object PermissionsAndOnboarding {
         val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
         val uri = Uri.fromParts("package", activity.packageName, null)
         intent.data = uri
+        activity.startActivity(intent)
+    }
+
+    fun launchNotificationAccess(activity: Activity) {
+        val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
         activity.startActivity(intent)
     }
 

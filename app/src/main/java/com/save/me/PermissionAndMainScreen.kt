@@ -98,6 +98,9 @@ fun PermissionAndMainScreen(
                 requestOverlayPermission = requestOverlayPermission,
                 requestAllFilesPermission = requestAllFilesPermission,
                 requestBatteryPermission = requestBatteryPermission,
+                requestNotificationAccess = {
+                    PermissionsAndOnboarding.launchNotificationAccess(activity)
+                },
                 showTitle = false,
                 permissionsUiRefresh = refreshKey // Will trigger MainScreen's refresh logic
             )

