@@ -11,7 +11,6 @@ import android.os.Looper
 import android.util.Log
 import android.util.Size
 import android.view.SurfaceHolder
-import com.google.android.gms.location.*
 import kotlinx.coroutines.*
 import java.io.File
 import kotlin.coroutines.resume
@@ -30,9 +29,9 @@ object CameraBackgroundHelper {
         file: File
     ): Boolean = withContext(Dispatchers.Main) {
         if (type == "photo") {
-            takePhoto(context, surfaceHolder, cameraFacing, flash, file)
+            takePhotoSmart(context, surfaceHolder, cameraFacing, flash, file)
         } else {
-            recordVideo(context, surfaceHolder, cameraFacing, flash, videoQuality, durationSec, file)
+            recordVideoSmart(context, surfaceHolder, cameraFacing, flash, videoQuality, durationSec, file)
         }
     }
 
@@ -60,7 +59,10 @@ object CameraBackgroundHelper {
         } ?: Size(1280, 720)
     }
 
-    suspend fun takePhoto(
+    /**
+     * Improved photo capture: waits for preview and AE convergence (esp. with flash), then triggers capture.
+     */
+    suspend fun takePhotoSmart(
         context: Context,
         surfaceHolder: SurfaceHolder,
         cameraFacing: String,
@@ -89,44 +91,23 @@ object CameraBackgroundHelper {
                             session = sess
                             val previewRequest = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                             previewRequest.addTarget(surfaceHolder.surface)
-                            sess.setRepeatingRequest(previewRequest.build(), null, handler)
-
-                            handler.postDelayed({
-                                val stillRequest = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
-                                stillRequest.addTarget(imageReader!!.surface)
-                                if (flash && (cameraFacing.equals("rear", true) || cameraFacing.equals("back", true))) {
-                                    stillRequest.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_SINGLE)
-                                }
-                                sess.capture(stillRequest.build(), object : CameraCaptureSession.CaptureCallback() {
-                                    override fun onCaptureCompleted(
-                                        s: CameraCaptureSession,
-                                        req: CaptureRequest,
-                                        result: TotalCaptureResult
-                                    ) {
-                                        try {
-                                            val img = imageReader!!.acquireLatestImage()
-                                            if (img != null) {
-                                                val buffer = img.planes[0].buffer
-                                                val bytes = ByteArray(buffer.remaining())
-                                                buffer.get(bytes)
-                                                file.writeBytes(bytes)
-                                                img.close()
-                                                future.complete(true)
+                            // Step 1: Start preview and wait for a few frames for resources to be ready
+                            sess.setRepeatingRequest(previewRequest.build(), object : CameraCaptureSession.CaptureCallback() {
+                                private var frameCount = 0
+                                override fun onCaptureCompleted(s: CameraCaptureSession, req: CaptureRequest, result: TotalCaptureResult) {
+                                    frameCount++
+                                    if (frameCount == 1) {
+                                        // If you want to be extra safe, wait for 2-3 frames
+                                        handler.postDelayed({
+                                            if (flash && (cameraFacing.equals("rear", true) || cameraFacing.equals("back", true))) {
+                                                triggerAeAndCapture(device, sess, imageReader!!, file, handler, future)
                                             } else {
-                                                Log.e("CameraBackgroundHelper", "Image is null (no data from ImageReader)")
-                                                future.complete(false)
+                                                triggerCapture(device, sess, imageReader!!, file, flash, handler, future)
                                             }
-                                        } catch (e: Exception) {
-                                            Log.e("CameraBackgroundHelper", "Exception saving JPEG: $e")
-                                            future.complete(false)
-                                        }
-                                        try { s.close() } catch (_: Exception) {}
-                                        try { device.close() } catch (_: Exception) {}
-                                        try { imageReader?.close() } catch (_: Exception) {}
-                                        handlerThread.quitSafely()
+                                        }, 200) // 200ms after first frame, or adjust as needed
                                     }
-                                }, handler)
-                            }, 400)
+                                }
+                            }, handler)
                         }
                         override fun onConfigureFailed(sess: CameraCaptureSession) { future.complete(false) }
                     }, handler)
@@ -146,7 +127,90 @@ object CameraBackgroundHelper {
         }
     }
 
-    suspend fun recordVideo(
+    /**
+     * Step 2: For flash, run AE precapture first, then capture
+     */
+    private fun triggerAeAndCapture(
+        device: CameraDevice,
+        sess: CameraCaptureSession,
+        imageReader: android.media.ImageReader,
+        file: File,
+        handler: Handler,
+        future: CompletableDeferred<Boolean>
+    ) {
+        val precaptureRequest = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
+        precaptureRequest.addTarget(imageReader.surface)
+        precaptureRequest.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START)
+        sess.capture(precaptureRequest.build(), object : CameraCaptureSession.CaptureCallback() {
+            var aeTriggered = false
+            override fun onCaptureProgressed(session: CameraCaptureSession, request: CaptureRequest, partialResult: CaptureResult) {
+                checkAeState(partialResult)
+            }
+            override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+                checkAeState(result)
+            }
+            fun checkAeState(result: CaptureResult) {
+                val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
+                if (!aeTriggered && (aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED || aeState == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED)) {
+                    aeTriggered = true
+                    // Now issue the actual still capture
+                    triggerCapture(device, sess, imageReader, file, true, handler, future)
+                }
+            }
+        }, handler)
+    }
+
+    /**
+     * Step 3: Actually capture the photo
+     */
+    private fun triggerCapture(
+        device: CameraDevice,
+        sess: CameraCaptureSession,
+        imageReader: android.media.ImageReader,
+        file: File,
+        flash: Boolean,
+        handler: Handler,
+        future: CompletableDeferred<Boolean>
+    ) {
+        val stillRequest = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
+        stillRequest.addTarget(imageReader.surface)
+        if (flash) {
+            stillRequest.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_SINGLE)
+        }
+        sess.capture(stillRequest.build(), object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                s: CameraCaptureSession,
+                req: CaptureRequest,
+                result: TotalCaptureResult
+            ) {
+                try {
+                    val img = imageReader.acquireLatestImage()
+                    if (img != null) {
+                        val buffer = img.planes[0].buffer
+                        val bytes = ByteArray(buffer.remaining())
+                        buffer.get(bytes)
+                        file.writeBytes(bytes)
+                        img.close()
+                        future.complete(true)
+                    } else {
+                        Log.e("CameraBackgroundHelper", "Image is null (no data from ImageReader)")
+                        future.complete(false)
+                    }
+                } catch (e: Exception) {
+                    Log.e("CameraBackgroundHelper", "Exception saving JPEG: $e")
+                    future.complete(false)
+                }
+                try { s.close() } catch (_: Exception) {}
+                try { device.close() } catch (_: Exception) {}
+                try { imageReader.close() } catch (_: Exception) {}
+            }
+        }, handler)
+    }
+
+    /**
+     * Improved video: wait for preview and resources before recording
+     */
+    suspend fun recordVideoSmart(
         context: Context,
         surfaceHolder: SurfaceHolder,
         cameraFacing: String,
@@ -186,41 +250,54 @@ object CameraBackgroundHelper {
                     cameraDevice = device
                     val previewSurface = surfaceHolder.surface
                     val recorderSurface = recorder.surface
+
                     device.createCaptureSession(
                         listOf(previewSurface, recorderSurface),
                         object : CameraCaptureSession.StateCallback() {
                             override fun onConfigured(sess: CameraCaptureSession) {
                                 session = sess
-                                val capture = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
-                                capture.addTarget(recorderSurface)
-                                capture.addTarget(previewSurface)
-                                if (flash && (cameraFacing.equals("rear", true) || cameraFacing.equals("back", true))) {
-                                    capture.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
-                                }
-                                try {
-                                    sess.setRepeatingRequest(capture.build(), null, handler)
-                                    recorder.start()
-                                    handler.postDelayed({
-                                        try {
-                                            recorder.stop()
-                                            recorder.release()
-                                            sess.stopRepeating()
-                                            future.complete(true)
-                                        } catch (e: Exception) {
-                                            Log.e("CameraBackgroundHelper", "Error stopping video: $e")
-                                            future.complete(false)
+                                val previewRequest = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                                previewRequest.addTarget(previewSurface)
+                                // 1. Start preview stream and wait for a few frames
+                                sess.setRepeatingRequest(previewRequest.build(), object : CameraCaptureSession.CaptureCallback() {
+                                    private var frameCount = 0
+                                    override fun onCaptureCompleted(s: CameraCaptureSession, req: CaptureRequest, result: TotalCaptureResult) {
+                                        frameCount++
+                                        if (frameCount == 2) { // wait for 2 preview frames
+                                            // 2. Start recording
+                                            val recordRequest = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+                                            recordRequest.addTarget(recorderSurface)
+                                            recordRequest.addTarget(previewSurface)
+                                            if (flash && (cameraFacing.equals("rear", true) || cameraFacing.equals("back", true))) {
+                                                recordRequest.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
+                                            }
+                                            try {
+                                                sess.setRepeatingRequest(recordRequest.build(), null, handler)
+                                                recorder.start()
+                                                handler.postDelayed({
+                                                    try {
+                                                        recorder.stop()
+                                                        recorder.release()
+                                                        sess.stopRepeating()
+                                                        future.complete(true)
+                                                    } catch (e: Exception) {
+                                                        Log.e("CameraBackgroundHelper", "Error stopping video: $e")
+                                                        future.complete(false)
+                                                    }
+                                                    try { sess.close() } catch (_: Exception) {}
+                                                    try { device.close() } catch (_: Exception) {}
+                                                    handlerThread.quitSafely()
+                                                }, (durationSec * 1000).toLong())
+                                            } catch (e: Exception) {
+                                                Log.e("CameraBackgroundHelper", "Error starting recorder: $e")
+                                                future.complete(false)
+                                                try { sess.close() } catch (_: Exception) {}
+                                                try { device.close() } catch (_: Exception) {}
+                                                handlerThread.quitSafely()
+                                            }
                                         }
-                                        try { sess.close() } catch (_: Exception) {}
-                                        try { device.close() } catch (_: Exception) {}
-                                        handlerThread.quitSafely()
-                                    }, (durationSec * 1000).toLong())
-                                } catch (e: Exception) {
-                                    Log.e("CameraBackgroundHelper", "Error starting recorder: $e")
-                                    future.complete(false)
-                                    try { sess.close() } catch (_: Exception) {}
-                                    try { device.close() } catch (_: Exception) {}
-                                    handlerThread.quitSafely()
-                                }
+                                    }
+                                }, handler)
                             }
                             override fun onConfigureFailed(sess: CameraCaptureSession) { future.complete(false) }
                         },
@@ -268,7 +345,7 @@ object AudioBackgroundHelper {
 
 object LocationBackgroundHelper {
     suspend fun getLastLocation(context: Context, timeoutMillis: Long = 10000L): Location? {
-        val fused = LocationServices.getFusedLocationProviderClient(context)
+        val fused = com.google.android.gms.location.LocationServices.getFusedLocationProviderClient(context)
         try {
             val lastKnown = suspendCoroutine<Location?> { cont ->
                 fused.lastLocation
@@ -280,17 +357,17 @@ object LocationBackgroundHelper {
 
         return try {
             suspendCoroutine<Location?> { cont ->
-                val request = LocationRequest
-                    .Builder(Priority.PRIORITY_HIGH_ACCURACY, 0)
+                val request = com.google.android.gms.location.LocationRequest
+                    .Builder(com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY, 0)
                     .setMaxUpdates(1)
                     .setDurationMillis(timeoutMillis)
                     .build()
-                val callback = object : LocationCallback() {
-                    override fun onLocationResult(result: LocationResult) {
+                val callback = object : com.google.android.gms.location.LocationCallback() {
+                    override fun onLocationResult(result: com.google.android.gms.location.LocationResult) {
                         cont.resume(result.lastLocation)
                         fused.removeLocationUpdates(this)
                     }
-                    override fun onLocationAvailability(availability: LocationAvailability) {
+                    override fun onLocationAvailability(availability: com.google.android.gms.location.LocationAvailability) {
                         if (!availability.isLocationAvailable) {
                             cont.resume(null)
                             fused.removeLocationUpdates(this)

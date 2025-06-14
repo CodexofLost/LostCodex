@@ -21,11 +21,25 @@ object CommandManager {
     private lateinit var dao: CommandQueueDao
     private var initialized = false
 
+    // Watchdog config
+    private const val WATCHDOG_PERIOD_MS = 5 * 60 * 1000L // 5 min
+
     fun initialize(context: Context) {
         if (initialized) return
         appContext = context.applicationContext
         dao = CommandQueueDatabase.getInstance(appContext).commandQueueDao()
         initialized = true
+
+        // On startup, cleanup stuck/running commands
+        cleanupStuckCommands()
+
+        // Periodic cleanup
+        queueScope.launch {
+            while (true) {
+                delay(WATCHDOG_PERIOD_MS)
+                cleanupStuckCommands()
+            }
+        }
     }
 
     fun isExclusiveType(type: String): Boolean =
@@ -78,12 +92,20 @@ object CommandManager {
                 runningJobIds.add(cmd.id)
                 queueScope.launch {
                     try {
-                        dao.updateStatus(cmd.id, "running")
+                        val now = System.currentTimeMillis()
+                        val expectedFinish = computeExpectedFinish(cmd, now)
+                        dao.updateStatusAndTimestampAndExpectedFinish(
+                            cmd.id,
+                            "running",
+                            now,
+                            expectedFinish
+                        )
                         withContext(Dispatchers.IO) {
                             executeCommand(appContext, cmd.toQueuedCommand(), cmd.id)
                         }
                     } catch (e: Exception) {
-                        dao.updateStatus(cmd.id, "failed")
+                        val now = System.currentTimeMillis()
+                        dao.updateStatusAndTimestampAndExpectedFinish(cmd.id, "failed", now, 0L)
                         onCommandActionComplete(cmd.id)
                     }
                 }
@@ -96,7 +118,8 @@ object CommandManager {
             val cmd = dao.getById(commandId)
             if (cmd != null) {
                 val neededResources = getResourceGroups(cmd.type)
-                dao.updateStatus(commandId, "done")
+                val now = System.currentTimeMillis()
+                dao.updateStatusAndTimestampAndExpectedFinish(commandId, "done", now, 0L)
                 resourceMutex.withLock {
                     runningResources.removeAll(neededResources)
                     runningJobIds.remove(commandId)
@@ -268,6 +291,37 @@ object CommandManager {
             processQueueOnce()
         }
     }
+
+    /**
+     * Watchdog: Reset "stuck" commands that have exceeded their expectedFinish timestamp.
+     * This is invoked at startup and periodically.
+     */
+    fun cleanupStuckCommands() {
+        queueScope.launch {
+            val now = System.currentTimeMillis()
+            val stuckCommands = dao.getAllRunningOverdue(now)
+            for (cmd in stuckCommands) {
+                dao.updateStatusAndTimestampAndExpectedFinish(cmd.id, "pending", now, 0L)
+                resourceMutex.withLock {
+                    runningResources.removeAll(getResourceGroups(cmd.type))
+                    runningJobIds.remove(cmd.id)
+                }
+            }
+        }
+    }
+
+    /**
+     * Computes the expected finish timestamp for a command, based on its type and duration.
+     * Adds a safety margin to account for overruns/crashes.
+     */
+    private fun computeExpectedFinish(cmd: CommandEntity, now: Long): Long {
+        val durationMinutes = cmd.duration?.toDoubleOrNull()?.coerceIn(0.1, 60.0) ?: 1.0
+        return when (cmd.type) {
+            "video", "audio" -> now + (durationMinutes * 60 * 1000).toLong() + 60_000 // +1 min margin
+            "photo" -> now + 30_000 // 30s for photo
+            else -> now + 30_000 // 30s for other quick tasks
+        }
+    }
 }
 
 @Entity(tableName = "command_queue")
@@ -280,7 +334,9 @@ data class CommandEntity(
     val duration: String? = null,
     val chatId: String? = null,
     val enqueueTime: Long = System.currentTimeMillis(),
-    val status: String = "pending"
+    val status: String = "pending",
+    val lastUpdated: Long = System.currentTimeMillis(),
+    val expectedFinish: Long = 0L
 ) {
     fun toQueuedCommand() = QueuedCommand(type, camera, flash, quality, duration, chatId)
     companion object {
@@ -304,13 +360,17 @@ interface CommandQueueDao {
     suspend fun getById(id: Long): CommandEntity?
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(cmd: CommandEntity): Long
-    @Query("UPDATE command_queue SET status=:status WHERE id=:id")
-    suspend fun updateStatus(id: Long, status: String)
+    @Query("UPDATE command_queue SET status=:status, lastUpdated=:timestamp WHERE id=:id")
+    suspend fun updateStatusAndTimestamp(id: Long, status: String, timestamp: Long)
+    @Query("UPDATE command_queue SET status=:status, lastUpdated=:timestamp, expectedFinish=:expectedFinish WHERE id=:id")
+    suspend fun updateStatusAndTimestampAndExpectedFinish(id: Long, status: String, timestamp: Long, expectedFinish: Long)
     @Query("DELETE FROM command_queue")
     suspend fun clearAll()
+    @Query("SELECT * FROM command_queue WHERE status='running' AND expectedFinish < :now")
+    suspend fun getAllRunningOverdue(now: Long): List<CommandEntity>
 }
 
-@Database(entities = [CommandEntity::class], version = 1)
+@Database(entities = [CommandEntity::class], version = 2)
 abstract class CommandQueueDatabase : RoomDatabase() {
     abstract fun commandQueueDao(): CommandQueueDao
     companion object {
@@ -321,7 +381,9 @@ abstract class CommandQueueDatabase : RoomDatabase() {
                     context.applicationContext,
                     CommandQueueDatabase::class.java,
                     "command_queue_db"
-                ).build().also { INSTANCE = it }
+                )
+                    .fallbackToDestructiveMigration() // <-- this line fixes the migration crash!
+                    .build().also { INSTANCE = it }
             }
         }
     }

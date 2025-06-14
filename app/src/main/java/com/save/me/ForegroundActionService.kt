@@ -34,28 +34,9 @@ class ForegroundActionService : Service() {
         job = CoroutineScope(Dispatchers.IO).launch {
             try {
                 if (action == "photo" || action == "video") {
-                    val holder = CompletableDeferred<SurfaceHolder?>()
-                    withContext(Dispatchers.Main) {
-                        OverlayHelper.showSurfaceOverlay(this@ForegroundActionService, { holderReady, overlay ->
-                            overlayView = overlay
-                            if (holderReady?.surface?.isValid == true) {
-                                holder.complete(holderReady)
-                            } else if (overlay is FrameLayout && overlay.childCount > 0 && overlay.getChildAt(0) is SurfaceView) {
-                                val sv = overlay.getChildAt(0) as SurfaceView
-                                sv.holder.addCallback(object : SurfaceHolder.Callback {
-                                    override fun surfaceCreated(sh: SurfaceHolder) {
-                                        holder.complete(sh)
-                                    }
-                                    override fun surfaceChanged(sh: SurfaceHolder, f: Int, w: Int, h: Int) {}
-                                    override fun surfaceDestroyed(sh: SurfaceHolder) {}
-                                })
-                            } else {
-                                holder.complete(null)
-                            }
-                        })
-                    }
-                    surfaceHolder = withTimeoutOrNull(2000) { holder.await() }
-                    if (surfaceHolder == null) {
+                    // --- Event-based, not timeout-based: only proceed when surface is valid ---
+                    val result = OverlayHelper.awaitSurfaceOverlay(this@ForegroundActionService)
+                    if (result == null) {
                         if (chatId != null) {
                             val deviceNickname = Preferences.getNickname(this@ForegroundActionService) ?: "Device"
                             UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: Unable to create camera surface for $action.")
@@ -64,6 +45,9 @@ class ForegroundActionService : Service() {
                         cleanupAndStop()
                         return@launch
                     }
+                    val (holderReady, overlay) = result
+                    overlayView = overlay
+                    surfaceHolder = holderReady
                 }
 
                 withContext(Dispatchers.Main) {
