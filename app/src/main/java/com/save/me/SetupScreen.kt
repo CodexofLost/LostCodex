@@ -1,6 +1,7 @@
 package com.save.me
 
 import android.content.Context
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -15,8 +16,11 @@ import com.save.me.ui.theme.AppTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.tasks.await
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.Response
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -52,7 +56,6 @@ fun SetupScreen(
 
         val backgroundColor = MaterialTheme.colorScheme.background
 
-        // CORRECTED: Set webhook to /bot<TOKEN> path!
         suspend fun setTelegramWebhook(token: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
             try {
                 val webhookUrl = "https://findmydevice.kambojistheking.workers.dev/bot${token}"
@@ -68,6 +71,32 @@ fun SetupScreen(
                 }
             } catch (e: Exception) {
                 false to "Webhook error: ${e.localizedMessage ?: "Unknown error"}"
+            }
+        }
+
+        suspend fun registerDeviceWithBackend(context: Context, botToken: String, nickname: String) = withContext(Dispatchers.IO) {
+            try {
+                val client = OkHttpClient()
+                val fcmToken = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
+                Log.d("SetupScreen", "Registering device with backend: botToken=$botToken, nickname=$nickname, fcmToken=$fcmToken")
+                val reqBody = """
+                    {"bot_token":"${botToken.trim()}","nickname":"${nickname.trim()}","fcm_token":"$fcmToken"}
+                """.trimIndent()
+                val request = Request.Builder()
+                    .url("https://findmydevice.kambojistheking.workers.dev/register_nickname")
+                    .post(RequestBody.create("application/json".toMediaTypeOrNull(), reqBody))
+                    .build()
+                val response = client.newCall(request).execute()
+                val body = response.body?.string()
+                Log.d("SetupScreen", "Backend response: code=${response.code}, body=$body")
+                if (!response.isSuccessful) {
+                    error = "Registration failed: ${response.code} $body"
+                } else {
+                    error = null
+                }
+            } catch (e: Exception) {
+                Log.e("SetupScreen", "Error registering device", e)
+                error = "Error registering device: ${e.localizedMessage}"
             }
         }
 
@@ -167,7 +196,6 @@ fun SetupScreen(
                     } else {
                         saveSetup(context, botToken.text, nickname.text)
                         coroutineScope.launch {
-                            // If bot token changed, auto-set webhook again for user convenience
                             val oldToken = Preferences.getBotToken(context)
                             if (botToken.text.trim() != (oldToken ?: "")) {
                                 webhookInProgress = true
@@ -175,6 +203,8 @@ fun SetupScreen(
                                 webhookInProgress = false
                                 webhookStatus = msg
                             }
+                            // Register device with backend
+                            registerDeviceWithBackend(context, botToken.text, nickname.text)
                             onSetupComplete()
                         }
                     }

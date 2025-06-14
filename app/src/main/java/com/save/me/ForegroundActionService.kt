@@ -222,7 +222,7 @@ class ForegroundActionService : Service() {
         val notification = androidx.core.app.NotificationCompat.Builder(this, NotificationHelper.CHANNEL_ID)
             .setContentTitle("Remote Control Service")
             .setContentText("Running background actions...")
-            .setSmallIcon(android.R.drawable.ic_menu_camera)
+            .setSmallIcon(R.drawable.ic_notification)
             .build()
         val type =
             when (action) {

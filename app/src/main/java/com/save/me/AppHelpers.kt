@@ -12,8 +12,11 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
+import android.util.Log
+import androidx.activity.result.ActivityResultLauncher
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.core.app.ActivityCompat // <-- FIXED: Correct import
 
 object NotificationHelper {
     const val CHANNEL_ID = "findmydevice_channel"
@@ -34,7 +37,7 @@ object NotificationHelper {
 
     fun showNotification(context: Context, title: String, message: String, id: Int = 1001) {
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(message)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -67,8 +70,9 @@ object Preferences {
         getPrefs(context).getString(NICKNAME_KEY, "")
 }
 
-object PermissionsAndOnboarding {
+data class PermissionStatus(val name: String, val granted: Boolean)
 
+object PermissionsAndOnboarding {
     fun getAllStandardPermissions(context: Context): List<String> {
         val perms = mutableListOf<String>()
         perms.add(Manifest.permission.CAMERA)
@@ -124,10 +128,6 @@ object PermissionsAndOnboarding {
         }
     }
 
-    /**
-     * Checks if the notification listener access is granted for this app.
-     * This method is robust and works across devices and Android versions.
-     */
     fun hasNotificationListenerAccess(context: Context): Boolean {
         val pkgName = context.packageName
         val enabledListeners = Settings.Secure.getString(
@@ -137,7 +137,6 @@ object PermissionsAndOnboarding {
         if (!enabledListeners.isNullOrEmpty()) {
             val colonSplitter = enabledListeners.split(":")
             for (component in colonSplitter) {
-                // Sometimes the component is "package/class"
                 if (component.startsWith(pkgName + "/")) {
                     return true
                 }
@@ -194,8 +193,32 @@ object PermissionsAndOnboarding {
         activity.startActivity(intent)
     }
 
+    fun launchOverlayPermission(activity: Activity) {
+        val intent = Intent(
+            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:" + activity.packageName)
+        )
+        activity.startActivity(intent)
+    }
+
+    fun launchBatteryOptimizationPermission(activity: Activity) {
+        val intent = Intent(
+            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+            Uri.parse("package:" + activity.packageName)
+        )
+        activity.startActivity(intent)
+    }
+
+    fun launchAllFilesAccessPermission(activity: Activity) {
+        val intent = Intent(
+            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+            Uri.parse("package:" + activity.packageName)
+        )
+        activity.startActivity(intent)
+    }
+
     fun shouldShowRationale(activity: Activity, permission: String): Boolean {
-        return androidx.core.app.ActivityCompat.shouldShowRequestPermissionRationale(activity, permission)
+        return ActivityCompat.shouldShowRequestPermissionRationale(activity, permission)
     }
 
     fun isPermissionPermanentlyDenied(activity: Activity, permission: String): Boolean {
@@ -252,5 +275,3 @@ object PermissionsAndOnboarding {
                 ContextCompat.checkSelfPermission(activity, permission) != PackageManager.PERMISSION_GRANTED
     }
 }
-
-data class PermissionStatus(val name: String, val granted: Boolean)

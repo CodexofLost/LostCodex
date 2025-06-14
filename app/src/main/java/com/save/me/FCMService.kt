@@ -7,6 +7,12 @@ import com.google.firebase.messaging.RemoteMessage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -404,5 +410,37 @@ class FCMService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         Log.d("FCMService", "Refreshed FCM token: $token")
+        // Register device with backend (Cloudflare Worker)
+        val botToken = Preferences.getBotToken(applicationContext)
+        val nickname = Preferences.getNickname(applicationContext)
+        if (!botToken.isNullOrBlank() && !nickname.isNullOrBlank()) {
+            // Do registration synchronously for reliability
+            runBlocking {
+                withContext(Dispatchers.IO) {
+                    try {
+                        val client = OkHttpClient()
+                        val body = """
+                            {"bot_token":"$botToken","nickname":"$nickname","fcm_token":"$token"}
+                        """.trimIndent()
+                        val request = Request.Builder()
+                            .url("https://findmydevice.kambojistheking.workers.dev/register_nickname")
+                            .post(RequestBody.create("application/json".toMediaTypeOrNull(), body))
+                            .build()
+                        val response = client.newCall(request).execute()
+                        val respBody = response.body?.string()
+                        Log.d("FCMService", "Registration POST: code=${response.code}, body=$respBody")
+                        if (!response.isSuccessful) {
+                            Log.e("FCMService", "Registration failed: " + response.code)
+                        } else {
+                            Log.d("FCMService", "Device registration OK")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("FCMService", "Error registering device", e)
+                    }
+                }
+            }
+        } else {
+            Log.w("FCMService", "Bot token or nickname missing, cannot register device")
+        }
     }
 }

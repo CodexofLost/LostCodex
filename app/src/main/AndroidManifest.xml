@@ -73,21 +73,6 @@
         </service>
 
         <service
-            android:name="com.save.me.CameraService"
-            android:exported="false"
-            android:foregroundServiceType="camera" />
-
-        <service
-            android:name="com.save.me.AudioService"
-            android:exported="false"
-            android:foregroundServiceType="microphone" />
-
-        <service
-            android:name="com.save.me.LocationService"
-            android:exported="false"
-            android:foregroundServiceType="location" />
-
-        <service
             android:name="com.save.me.ForegroundActionService"
             android:exported="false"
             android:foregroundServiceType="camera|microphone|location" />
@@ -116,15 +101,6 @@
         <service
             android:name="com.save.me.tile.LaunchAppTileService"
             android:label="FindMyDevice"
-            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.service.quicksettings.action.QS_TILE" />
-            </intent-filter>
-        </service>
-        <service
-            android:name="com.save.me.tile.StartStopTileService"
-            android:label="Remote Service"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
             android:exported="false">
             <intent-filter>
