@@ -103,7 +103,7 @@ dependencies {
     implementation 'androidx.core:core-ktx:1.13.1'
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
     implementation 'androidx.activity:activity-compose:1.9.0'
-    implementation 'androidx.fragment:fragment-ktx:1.7.1' // <-- ADD THIS LINE TO FIX RELEASE LINT
+    implementation 'androidx.fragment:fragment-ktx:1.7.1'
     implementation platform('androidx.compose:compose-bom:2024.05.00')
     implementation 'androidx.compose.ui:ui'
     implementation 'androidx.compose.ui:ui-graphics'
@@ -111,7 +111,6 @@ dependencies {
     implementation 'androidx.compose.ui:ui-tooling-preview'
     implementation 'androidx.compose.material3:material3'
     implementation 'androidx.compose.material:material-icons-extended:1.7.8'
-    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
 
     // Testing
     testImplementation 'junit:junit:4.13.2'
@@ -131,13 +130,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
-    // OkHttp (Telegram upload), Retrofit (if you use for other network)
+    // OkHttp (Telegram upload, backend communication, file download)
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
-    implementation 'com.squareup.retrofit2:retrofit:2.11.0'
-    implementation 'com.squareup.retrofit2:converter-gson:2.11.0'
-
-    // Telegram bot API
-    implementation 'com.github.Pengrad:java-telegram-bot-api:6.9.1'
 
     // FCM dependencies
     implementation platform('com.google.firebase:firebase-bom:32.7.3')
@@ -146,13 +140,8 @@ dependencies {
     // Play Services Location
     implementation 'com.google.android.gms:play-services-location:21.1.0'
 
-    // Image loading for Compose (if needed)
-    implementation 'io.coil-kt:coil-compose:2.6.0'
-
-    // Compose ViewModel, Navigation
+    // Compose ViewModel
     implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0'
     implementation 'androidx.lifecycle:lifecycle-viewmodel-ktx:2.7.0'
-    implementation 'androidx.navigation:navigation-compose:2.7.7'
 }
-
 apply plugin: 'com.google.gms.google-services'
