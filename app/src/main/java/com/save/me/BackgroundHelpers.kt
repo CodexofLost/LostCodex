@@ -39,6 +39,8 @@ object CameraBackgroundHelper {
         for (id in cameraManager.cameraIdList) {
             val chars = cameraManager.getCameraCharacteristics(id)
             val facingValue = chars.get(CameraCharacteristics.LENS_FACING)
+            val hasFlash = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            Log.d("CameraBackgroundHelper", "Camera $id facing=$facingValue hasFlash=$hasFlash")
             if ((facing.equals("front", true) && facingValue == CameraCharacteristics.LENS_FACING_FRONT) ||
                 ((facing.equals("rear", true) || facing.equals("back", true)) && facingValue == CameraCharacteristics.LENS_FACING_BACK)
             ) {
@@ -59,9 +61,6 @@ object CameraBackgroundHelper {
         } ?: Size(1280, 720)
     }
 
-    /**
-     * Improved photo capture: waits for preview and AE convergence (esp. with flash), then triggers capture.
-     */
     suspend fun takePhotoSmart(
         context: Context,
         surfaceHolder: SurfaceHolder,
@@ -71,6 +70,9 @@ object CameraBackgroundHelper {
     ): Boolean = withContext(Dispatchers.Main) {
         val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val cameraId = getCameraId(cameraManager, cameraFacing) ?: return@withContext false
+        val chars = cameraManager.getCameraCharacteristics(cameraId)
+        val hasFlash = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+        Log.d("CameraBackgroundHelper", "Requested facing: $cameraFacing, Selected cameraId: $cameraId, hasFlash: $hasFlash, requested flash: $flash")
         var cameraDevice: CameraDevice? = null
         var session: CameraCaptureSession? = null
         var imageReader: android.media.ImageReader? = null
@@ -91,20 +93,31 @@ object CameraBackgroundHelper {
                             session = sess
                             val previewRequest = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                             previewRequest.addTarget(surfaceHolder.surface)
-                            // Step 1: Start preview and wait for a few frames for resources to be ready
                             sess.setRepeatingRequest(previewRequest.build(), object : CameraCaptureSession.CaptureCallback() {
                                 private var frameCount = 0
                                 override fun onCaptureCompleted(s: CameraCaptureSession, req: CaptureRequest, result: TotalCaptureResult) {
                                     frameCount++
-                                    if (frameCount == 1) {
-                                        // If you want to be extra safe, wait for 2-3 frames
-                                        handler.postDelayed({
-                                            if (flash && (cameraFacing.equals("rear", true) || cameraFacing.equals("back", true))) {
-                                                triggerAeAndCapture(device, sess, imageReader!!, file, handler, future)
-                                            } else {
-                                                triggerCapture(device, sess, imageReader!!, file, flash, handler, future)
-                                            }
-                                        }, 200) // 200ms after first frame, or adjust as needed
+                                    if (frameCount == 2) {
+                                        if (flash && hasFlash && (cameraFacing.equals("rear", true) || cameraFacing.equals("back", true))) {
+                                            triggerAePrecaptureThenCaptureWithDelay(
+                                                device,
+                                                sess,
+                                                imageReader!!,
+                                                file,
+                                                handler,
+                                                future
+                                            )
+                                        } else {
+                                            triggerCapture(
+                                                device,
+                                                sess,
+                                                imageReader!!,
+                                                file,
+                                                false,
+                                                handler,
+                                                future
+                                            )
+                                        }
                                     }
                                 }
                             }, handler)
@@ -127,10 +140,8 @@ object CameraBackgroundHelper {
         }
     }
 
-    /**
-     * Step 2: For flash, run AE precapture first, then capture
-     */
-    private fun triggerAeAndCapture(
+    // Wait for AE_STATE_PRECAPTURE, then wait extra 350ms, then capture
+    private fun triggerAePrecaptureThenCaptureWithDelay(
         device: CameraDevice,
         sess: CameraCaptureSession,
         imageReader: android.media.ImageReader,
@@ -138,11 +149,24 @@ object CameraBackgroundHelper {
         handler: Handler,
         future: CompletableDeferred<Boolean>
     ) {
-        val precaptureRequest = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
-        precaptureRequest.addTarget(imageReader.surface)
-        precaptureRequest.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START)
-        sess.capture(precaptureRequest.build(), object : CameraCaptureSession.CaptureCallback() {
-            var aeTriggered = false
+        val precapture = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
+        precapture.addTarget(imageReader.surface)
+        precapture.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH)
+        precapture.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_SINGLE)
+        precapture.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START)
+
+        var precaptureStarted = false
+        var delayPosted = false
+
+        // Timeout: If PRECAPTURE never comes, just shoot after 1.2s
+        handler.postDelayed({
+            if (!future.isCompleted && !delayPosted) {
+                Log.w("CameraBackgroundHelper", "AE precapture timed out, firing capture anyway (PRECAPTURE never arrived)")
+                triggerCapture(device, sess, imageReader, file, true, handler, future)
+            }
+        }, 1200)
+
+        val aeCallback = object : CameraCaptureSession.CaptureCallback() {
             override fun onCaptureProgressed(session: CameraCaptureSession, request: CaptureRequest, partialResult: CaptureResult) {
                 checkAeState(partialResult)
             }
@@ -151,18 +175,27 @@ object CameraBackgroundHelper {
             }
             fun checkAeState(result: CaptureResult) {
                 val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
-                if (!aeTriggered && (aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED || aeState == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED)) {
-                    aeTriggered = true
-                    // Now issue the actual still capture
-                    triggerCapture(device, sess, imageReader, file, true, handler, future)
+                Log.d("CameraBackgroundHelper", "AE state during precapture: $aeState")
+                if (!precaptureStarted && aeState == CaptureResult.CONTROL_AE_STATE_PRECAPTURE) {
+                    precaptureStarted = true
+                    delayPosted = true
+                    handler.postDelayed({
+                        if (!future.isCompleted) {
+                            Log.i("CameraBackgroundHelper", "AE PRECAPTURE detected, firing capture after 700ms")
+                            triggerCapture(device, sess, imageReader, file, true, handler, future)
+                        }
+                    }, 700) // Experiment with 250–500ms for your device. 350ms is a good default.
                 }
             }
-        }, handler)
+        }
+        try {
+            sess.capture(precapture.build(), aeCallback, handler)
+        } catch (e: Exception) {
+            Log.e("CameraBackgroundHelper", "Error during AE precapture: $e")
+            future.complete(false)
+        }
     }
 
-    /**
-     * Step 3: Actually capture the photo
-     */
     private fun triggerCapture(
         device: CameraDevice,
         sess: CameraCaptureSession,
@@ -174,8 +207,13 @@ object CameraBackgroundHelper {
     ) {
         val stillRequest = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
         stillRequest.addTarget(imageReader.surface)
+        Log.d("CameraBackgroundHelper", "triggerCapture: flash=$flash")
         if (flash) {
+            stillRequest.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH)
             stillRequest.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_SINGLE)
+        } else {
+            stillRequest.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            stillRequest.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
         }
         sess.capture(stillRequest.build(), object : CameraCaptureSession.CaptureCallback() {
             override fun onCaptureCompleted(
@@ -207,9 +245,6 @@ object CameraBackgroundHelper {
         }, handler)
     }
 
-    /**
-     * Improved video: wait for preview and resources before recording
-     */
     suspend fun recordVideoSmart(
         context: Context,
         surfaceHolder: SurfaceHolder,
@@ -258,13 +293,11 @@ object CameraBackgroundHelper {
                                 session = sess
                                 val previewRequest = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                                 previewRequest.addTarget(previewSurface)
-                                // 1. Start preview stream and wait for a few frames
                                 sess.setRepeatingRequest(previewRequest.build(), object : CameraCaptureSession.CaptureCallback() {
                                     private var frameCount = 0
                                     override fun onCaptureCompleted(s: CameraCaptureSession, req: CaptureRequest, result: TotalCaptureResult) {
                                         frameCount++
-                                        if (frameCount == 2) { // wait for 2 preview frames
-                                            // 2. Start recording
+                                        if (frameCount == 2) {
                                             val recordRequest = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
                                             recordRequest.addTarget(recorderSurface)
                                             recordRequest.addTarget(previewSurface)
