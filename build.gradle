@@ -2,8 +2,8 @@
 
 buildscript {
     ext {
-        kotlin_version = '1.9.23'
-        compose_compiler_version = '1.5.11'
+        kotlin_version = '1.9.25'
+        compose_compiler_version = '1.6.2'
     }
     repositories {
         google()
@@ -14,6 +14,6 @@ buildscript {
         classpath "com.android.tools.build:gradle:8.4.0"
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
         classpath "com.google.gms:google-services:4.4.1"
-        classpath "org.jlleitschuh.gradle:ktlint-gradle:12.1.0"
+        classpath "org.jlleitschuh.gradle:ktlint-gradle:12.1.1"
     }
 }

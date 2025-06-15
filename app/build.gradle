@@ -8,12 +8,12 @@ plugins {
 
 android {
     namespace = "com.save.me"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.save.me"
         minSdk = 29
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -76,7 +76,7 @@ android {
         compose = true
     }
     composeOptions {
-        kotlinCompilerExtensionVersion = '1.5.11'
+        kotlinCompilerExtensionVersion = '1.5.15'
     }
     packagingOptions {
         resources {
