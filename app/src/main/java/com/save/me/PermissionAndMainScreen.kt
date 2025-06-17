@@ -1,19 +1,17 @@
 package com.save.me
 
 import android.app.Activity
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.animation.core.Animatable
@@ -70,7 +68,7 @@ fun PermissionAndMainScreen(
                         var refreshAnimating by remember { mutableStateOf(false) }
                         var gearAnimating by remember { mutableStateOf(false) }
                         AnimatedRotateIconButton(
-                            icon = Icons.Filled.Refresh,
+                            iconRes = R.drawable.ic_refresh,
                             contentDescription = "Refresh Status",
                             isRotating = refreshAnimating,
                             onClick = {
@@ -80,7 +78,7 @@ fun PermissionAndMainScreen(
                             onAnimationEnd = { refreshAnimating = false }
                         )
                         AnimatedRotateIconButton(
-                            icon = Icons.Filled.Settings,
+                            iconRes = R.drawable.ic_settings,
                             contentDescription = "Setup Device",
                             isRotating = gearAnimating,
                             onClick = {
@@ -131,9 +129,10 @@ fun SetupScreenWithBack(
                 title = { Text("Setup Device") },
                 navigationIcon = {
                     IconButton(onClick = onSetupComplete) {
-                        Icon(
-                            imageVector = Icons.Filled.ArrowBack,
-                            contentDescription = "Back"
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_arrow_back),
+                            contentDescription = "Back",
+                            modifier = Modifier.size(28.dp)
                         )
                     }
                 }
@@ -152,7 +151,7 @@ fun SetupScreenWithBack(
 
 @Composable
 fun AnimatedRotateIconButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    iconRes: Int,
     contentDescription: String,
     isRotating: Boolean,
     onClick: () -> Unit,
@@ -174,8 +173,8 @@ fun AnimatedRotateIconButton(
             if (!isRotating) onClick()
         }
     ) {
-        Icon(
-            icon,
+        Image(
+            painter = painterResource(id = iconRes),
             contentDescription = contentDescription,
             modifier = Modifier
                 .size(28.dp)

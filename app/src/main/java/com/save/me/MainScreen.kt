@@ -16,11 +16,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.ArrowRight
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -28,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -343,8 +339,8 @@ fun PermissionStatusExpandableTab(
                 modifier = Modifier
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
-                Icon(
-                    imageVector = if (expanded) Icons.Filled.ArrowDropDown else Icons.Filled.ArrowRight,
+                androidx.compose.foundation.Image(
+                    painter = painterResource(id = if (expanded) R.drawable.ic_arrow_drop_down else R.drawable.ic_arrow_right),
                     contentDescription = null,
                     modifier = Modifier.size(28.dp)
                 )
@@ -367,10 +363,13 @@ fun PermissionStatusExpandableTab(
                                 .fillMaxWidth()
                                 .padding(vertical = 2.dp)
                         ) {
-                            Icon(
-                                imageVector = if (status.granted) Icons.Filled.Check else Icons.Filled.Close,
+                            androidx.compose.foundation.Image(
+                                painter = painterResource(id = if (status.granted) R.drawable.ic_check else R.drawable.ic_close),
                                 contentDescription = null,
-                                tint = if (status.granted) Color(0xFF4CAF50) else Color(0xFFF44336)
+                                modifier = Modifier.size(24.dp),
+                                colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(
+                                    if (status.granted) Color(0xFF4CAF50) else Color(0xFFF44336)
+                                )
                             )
                             Spacer(Modifier.width(8.dp))
                             Text(status.name, modifier = Modifier.weight(1f))
