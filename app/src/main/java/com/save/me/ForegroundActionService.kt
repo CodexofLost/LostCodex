@@ -36,9 +36,14 @@ class ForegroundActionService : Service() {
         val commandId = intent?.getLongExtra("command_id", -1L)
             ?: System.currentTimeMillis() // fallback if missing
 
+        // --- LOG ALL RELEVANT PERMISSIONS ---
+        logPermissions()
+
         log("onStartCommand: action=$action, commandId=$commandId, startId=$startId")
 
-        // Immediately show foreground notification
+        // --- ENSURE NOTIFICATION IS SHOWN IMMEDIATELY ---
+        val type = getForegroundServiceType(action)
+        log("showNotificationForAction: action=$action, foregroundServiceType=$type")
         showNotificationForAction(action)
 
         // Start a coroutine for each command, only one per exclusive resource. Parallel for others.
@@ -220,25 +225,32 @@ class ForegroundActionService : Service() {
             .setContentTitle("Remote Control Service")
             .setContentText("Running background actions...")
             .setSmallIcon(R.drawable.ic_notification)
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+            .setCategory(androidx.core.app.NotificationCompat.CATEGORY_ALARM)
             .build()
-        val type =
-            when (action) {
-                "photo" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
-                "video" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                "audio" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                "location" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
-                else -> 0
-            }
+        val type = getForegroundServiceType(action)
+        log("Calling startForeground: type=$type for action=$action")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && type != 0) {
             try {
                 startForeground(1, notification, type)
-            } catch (_: SecurityException) {
-                log("SecurityException in startForeground!")
+            } catch (e: SecurityException) {
+                log("SecurityException in startForeground! type=$type action=$action: ${e.message}")
                 stopSelf()
                 return
             }
         } else {
             startForeground(1, notification)
+        }
+    }
+
+    /** Returns the correct foreground service type (mask) for startForeground() based on action. */
+    private fun getForegroundServiceType(action: String): Int {
+        return when (action) {
+            "photo" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            "video" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            "audio" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            "location" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            else -> 0
         }
     }
 
@@ -253,6 +265,23 @@ class ForegroundActionService : Service() {
 
     private fun log(msg: String) {
         android.util.Log.d("ForegroundActionService", msg)
+    }
+
+    /** Logs the permission state for all relevant runtime permissions. */
+    private fun logPermissions() {
+        val context = this
+        val perms = listOf(
+            android.Manifest.permission.CAMERA,
+            android.Manifest.permission.RECORD_AUDIO,
+            "android.permission.FOREGROUND_SERVICE",
+            "android.permission.FOREGROUND_SERVICE_CAMERA",
+            "android.permission.FOREGROUND_SERVICE_MICROPHONE",
+            "android.permission.FOREGROUND_SERVICE_LOCATION"
+        )
+        val status = perms.joinToString(", ") { perm ->
+            "$perm=${androidx.core.content.ContextCompat.checkSelfPermission(context, perm) == android.content.pm.PackageManager.PERMISSION_GRANTED}"
+        }
+        log("Permission state: $status")
     }
 
     companion object {
