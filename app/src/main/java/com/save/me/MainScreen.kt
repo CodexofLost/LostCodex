@@ -6,8 +6,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
@@ -23,15 +21,12 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ArrowRight
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -58,7 +53,6 @@ fun MainScreen(
     requestAllFilesPermission: () -> Unit,
     requestBatteryPermission: () -> Unit,
     requestNotificationAccess: () -> Unit,
-    showTitle: Boolean = true,
     permissionsUiRefresh: Int
 ) {
     val context = LocalContext.current
@@ -129,45 +123,6 @@ fun MainScreen(
 
     var permissionsExpanded by remember { mutableStateOf(false) }
 
-    if (showTitle) {
-        var refreshAnimating by remember { mutableStateOf(false) }
-        var gearAnimating by remember { mutableStateOf(false) }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp, top = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                "Find My Device",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier
-                    .weight(1f)
-            )
-            AnimatedRotateIconButton(
-                icon = Icons.Filled.Refresh,
-                contentDescription = "Refresh Status",
-                isRotating = refreshAnimating,
-                onClick = {
-                    refreshAnimating = true
-                    onRefreshClick?.invoke()
-                },
-                onAnimationEnd = { refreshAnimating = false }
-            )
-            AnimatedRotateIconButton(
-                icon = Icons.Filled.Edit,
-                contentDescription = "Setup Device",
-                isRotating = gearAnimating,
-                onClick = {
-                    gearAnimating = true
-                    onSetupClick?.invoke()
-                },
-                onAnimationEnd = { gearAnimating = false }
-            )
-        }
-    }
-
     Column(
         Modifier
             .fillMaxSize()
@@ -216,7 +171,7 @@ fun MainScreen(
             modifier = Modifier.padding(start = 32.dp, bottom = 8.dp)
         )
 
-        // Device Username Row
+        // Device Username Row (no edit button)
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -229,11 +184,6 @@ fun MainScreen(
                 fontSize = 17.sp,
                 modifier = Modifier.weight(1f)
             )
-            IconButton(
-                onClick = { onSetupClick?.invoke() }
-            ) {
-                Icon(Icons.Filled.Edit, contentDescription = "Edit Nickname")
-            }
         }
         Card(
             shape = RoundedCornerShape(12.dp),
@@ -256,7 +206,7 @@ fun MainScreen(
             }
         }
         Spacer(Modifier.height(14.dp))
-        // Bot Token Row
+        // Bot Token Row (no edit button)
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -269,11 +219,6 @@ fun MainScreen(
                 fontSize = 17.sp,
                 modifier = Modifier.weight(1f)
             )
-            IconButton(
-                onClick = { onSetupClick?.invoke() }
-            ) {
-                Icon(Icons.Filled.Edit, contentDescription = "Edit bot token")
-            }
         }
         Card(
             shape = RoundedCornerShape(12.dp),
@@ -371,42 +316,6 @@ fun MainScreen(
             }
             Spacer(Modifier.height(20.dp))
         }
-    }
-}
-
-@Composable
-fun AnimatedRotateIconButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    contentDescription: String,
-    isRotating: Boolean,
-    onClick: () -> Unit,
-    onAnimationEnd: () -> Unit
-) {
-    val rotation = remember { Animatable(0f) }
-    LaunchedEffect(isRotating) {
-        if (isRotating) {
-            rotation.snapTo(0f)
-            rotation.animateTo(
-                360f,
-                animationSpec = tween(600)
-            )
-            onAnimationEnd()
-        }
-    }
-    IconButton(
-        onClick = {
-            if (!isRotating) onClick()
-        }
-    ) {
-        Icon(
-            icon,
-            contentDescription = contentDescription,
-            modifier = Modifier
-                .size(28.dp)
-                .graphicsLayer {
-                    rotationZ = rotation.value
-                }
-        )
     }
 }
 

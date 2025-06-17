@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">FindMyDevice</string>
+    <string name="app_name">Findgram</string>
     <string name="permission_required">Permissions Required</string>
     <string name="grant_permissions">Grant Permissions</string>
     <string name="exit">Exit</string>

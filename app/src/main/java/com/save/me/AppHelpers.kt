@@ -19,8 +19,8 @@ import androidx.core.content.ContextCompat
 import androidx.core.app.ActivityCompat // <-- FIXED: Correct import
 
 object NotificationHelper {
-    const val CHANNEL_ID = "findmydevice_channel"
-    private const val CHANNEL_NAME = "FindMyDevice Notifications"
+    const val CHANNEL_ID = "findgram_channel"
+    private const val CHANNEL_NAME = "Findgram Notifications"
 
     fun createChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

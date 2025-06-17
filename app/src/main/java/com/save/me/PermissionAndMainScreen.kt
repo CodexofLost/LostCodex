@@ -1,18 +1,24 @@
 package com.save.me
 
 import android.app.Activity
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.graphics.graphicsLayer
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -25,24 +31,16 @@ fun PermissionAndMainScreen(
     openAppSettings: () -> Unit,
     requestOverlayPermission: () -> Unit,
     requestAllFilesPermission: () -> Unit,
-    requestBatteryPermission: () -> Unit
+    requestBatteryPermission: () -> Unit,
+    forceSetupScreen: Boolean = false // Pass true to force show setup (no back)
 ) {
     val context = LocalContext.current
     var permissionStatuses by remember { mutableStateOf(PermissionsAndOnboarding.getAllPermissionStatuses(context)) }
-    var needsOverlay by remember { mutableStateOf(PermissionsAndOnboarding.needsOverlay(context)) }
-    var needsAllFiles by remember { mutableStateOf(PermissionsAndOnboarding.needsAllFiles(context)) }
-    var needsBattery by remember { mutableStateOf(PermissionsAndOnboarding.needsBattery(context)) }
-    var needsBgLocation by remember { mutableStateOf(!PermissionsAndOnboarding.hasBackgroundLocation(context)) }
     var refreshKey by remember { mutableStateOf(0) }
+    var showSetupScreen by remember { mutableStateOf(forceSetupScreen) }
 
     val handleRefresh = {
-        // Refresh permission statuses
         permissionStatuses = PermissionsAndOnboarding.getAllPermissionStatuses(context)
-        needsOverlay = PermissionsAndOnboarding.needsOverlay(context)
-        needsAllFiles = PermissionsAndOnboarding.needsAllFiles(context)
-        needsBattery = PermissionsAndOnboarding.needsBattery(context)
-        needsBgLocation = !PermissionsAndOnboarding.hasBackgroundLocation(context)
-        // Trigger connection status refresh in MainScreen via refreshKey
         refreshKey += 1
     }
 
@@ -50,60 +48,140 @@ fun PermissionAndMainScreen(
         handleRefresh()
     }
 
+    if (showSetupScreen) {
+        if (forceSetupScreen) {
+            // Show setup with title, no back button (first install)
+            SetupScreen(
+                onSetupComplete = { showSetupScreen = false },
+                showTitle = true
+            )
+        } else {
+            // Show setup with back button in appBar (from settings)
+            SetupScreenWithBack(
+                onSetupComplete = { showSetupScreen = false }
+            )
+        }
+    } else {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("Findgram") },
+                    actions = {
+                        var refreshAnimating by remember { mutableStateOf(false) }
+                        var gearAnimating by remember { mutableStateOf(false) }
+                        AnimatedRotateIconButton(
+                            icon = Icons.Filled.Refresh,
+                            contentDescription = "Refresh Status",
+                            isRotating = refreshAnimating,
+                            onClick = {
+                                refreshAnimating = true
+                                handleRefresh()
+                            },
+                            onAnimationEnd = { refreshAnimating = false }
+                        )
+                        AnimatedRotateIconButton(
+                            icon = Icons.Filled.Settings,
+                            contentDescription = "Setup Device",
+                            isRotating = gearAnimating,
+                            onClick = {
+                                gearAnimating = true
+                                showSetupScreen = true
+                            },
+                            onAnimationEnd = { gearAnimating = false }
+                        )
+                    }
+                )
+            }
+        ) { innerPadding ->
+            Column(
+                Modifier
+                    .padding(innerPadding)
+                    .fillMaxSize()
+                    .padding(16.dp)
+            ) {
+                MainScreen(
+                    activity = activity,
+                    onSetupClick = null,
+                    onRefreshClick = handleRefresh,
+                    vm = vm,
+                    realPermissions = permissionStatuses,
+                    requestPermission = requestPermission,
+                    openAppSettings = openAppSettings,
+                    requestOverlayPermission = requestOverlayPermission,
+                    requestAllFilesPermission = requestAllFilesPermission,
+                    requestBatteryPermission = requestBatteryPermission,
+                    requestNotificationAccess = {
+                        PermissionsAndOnboarding.launchNotificationAccess(activity)
+                    },
+                    permissionsUiRefresh = refreshKey
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SetupScreenWithBack(
+    onSetupComplete: () -> Unit
+) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Find My Device") },
-                actions = {
-                    var refreshAnimating by remember { mutableStateOf(false) }
-                    var gearAnimating by remember { mutableStateOf(false) }
-                    AnimatedRotateIconButton(
-                        icon = Icons.Filled.Refresh,
-                        contentDescription = "Refresh Status",
-                        isRotating = refreshAnimating,
-                        onClick = {
-                            refreshAnimating = true
-                            handleRefresh()
-                        },
-                        onAnimationEnd = { refreshAnimating = false }
-                    )
-                    AnimatedRotateIconButton(
-                        icon = Icons.Filled.Settings,
-                        contentDescription = "Setup Device",
-                        isRotating = gearAnimating,
-                        onClick = {
-                            gearAnimating = true
-                            onSetupClick()
-                        },
-                        onAnimationEnd = { gearAnimating = false }
-                    )
+                title = { Text("Setup Device") },
+                navigationIcon = {
+                    IconButton(onClick = onSetupComplete) {
+                        Icon(
+                            imageVector = Icons.Filled.ArrowBack,
+                            contentDescription = "Back"
+                        )
+                    }
                 }
             )
         }
     ) { innerPadding ->
-        Column(
+        Box(
             Modifier
                 .padding(innerPadding)
                 .fillMaxSize()
-                .padding(16.dp)
         ) {
-            MainScreen(
-                activity = activity,
-                onSetupClick = onSetupClick,
-                onRefreshClick = handleRefresh,
-                vm = vm,
-                realPermissions = permissionStatuses,
-                requestPermission = requestPermission,
-                openAppSettings = openAppSettings,
-                requestOverlayPermission = requestOverlayPermission,
-                requestAllFilesPermission = requestAllFilesPermission,
-                requestBatteryPermission = requestBatteryPermission,
-                requestNotificationAccess = {
-                    PermissionsAndOnboarding.launchNotificationAccess(activity)
-                },
-                showTitle = false,
-                permissionsUiRefresh = refreshKey // Will trigger MainScreen's refresh logic
-            )
+            SetupScreen(onSetupComplete = onSetupComplete, showTitle = false)
         }
+    }
+}
+
+@Composable
+fun AnimatedRotateIconButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    isRotating: Boolean,
+    onClick: () -> Unit,
+    onAnimationEnd: () -> Unit
+) {
+    val rotation = remember { Animatable(0f) }
+    LaunchedEffect(isRotating) {
+        if (isRotating) {
+            rotation.snapTo(0f)
+            rotation.animateTo(
+                360f,
+                animationSpec = tween(600)
+            )
+            onAnimationEnd()
+        }
+    }
+    IconButton(
+        onClick = {
+            if (!isRotating) onClick()
+        }
+    ) {
+        Icon(
+            icon,
+            contentDescription = contentDescription,
+            modifier = Modifier
+                .size(28.dp)
+                .graphicsLayer {
+                    rotationZ = rotation.value
+                }
+        )
     }
 }

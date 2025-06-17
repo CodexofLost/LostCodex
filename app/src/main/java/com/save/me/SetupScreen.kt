@@ -6,9 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
@@ -26,7 +24,8 @@ import okhttp3.Response
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SetupScreen(
-    onSetupComplete: () -> Unit
+    onSetupComplete: () -> Unit,
+    showTitle: Boolean = true
 ) {
     AppTheme {
         val context = LocalContext.current
@@ -47,6 +46,7 @@ fun SetupScreen(
         var error by remember { mutableStateOf<String?>(null) }
         var webhookStatus by remember { mutableStateOf<String?>(null) }
         var webhookInProgress by remember { mutableStateOf(false) }
+        var saveInProgress by remember { mutableStateOf(false) }
         val coroutineScope = rememberCoroutineScope()
 
         fun saveSetup(context: Context, token: String, nickname: String) {
@@ -74,7 +74,7 @@ fun SetupScreen(
             }
         }
 
-        suspend fun registerDeviceWithBackend(context: Context, botToken: String, nickname: String) = withContext(Dispatchers.IO) {
+        suspend fun registerDeviceWithBackend(context: Context, botToken: String, nickname: String): Pair<Boolean, String?> = withContext(Dispatchers.IO) {
             try {
                 val client = OkHttpClient()
                 val fcmToken = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
@@ -90,13 +90,13 @@ fun SetupScreen(
                 val body = response.body?.string()
                 Log.d("SetupScreen", "Backend response: code=${response.code}, body=$body")
                 if (!response.isSuccessful) {
-                    error = "Registration failed: ${response.code} $body"
+                    false to "Registration failed: ${response.code} $body"
                 } else {
-                    error = null
+                    true to null
                 }
             } catch (e: Exception) {
                 Log.e("SetupScreen", "Error registering device", e)
-                error = "Error registering device: ${e.localizedMessage}"
+                false to "Error registering device: ${e.localizedMessage}"
             }
         }
 
@@ -106,16 +106,26 @@ fun SetupScreen(
                 .background(backgroundColor)
                 .padding(24.dp)
         ) {
-            Text(
-                "Setup Device",
-                style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            Spacer(Modifier.height(24.dp))
+            // Only add vertical space if the internal title is shown
+            if (showTitle) {
+                Spacer(Modifier.height(48.dp))
+                Text(
+                    "Setup Device",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Spacer(Modifier.height(24.dp))
+            } else {
+                Spacer(Modifier.height(8.dp)) // Minimal space when opened from settings
+            }
 
             OutlinedTextField(
                 value = botToken,
-                onValueChange = { botToken = it },
+                onValueChange = {
+                    botToken = it
+                    webhookStatus = null
+                    error = null
+                },
                 label = { Text("Bot Token") },
                 modifier = Modifier.fillMaxWidth(),
                 colors = OutlinedTextFieldDefaults.colors(
@@ -145,10 +155,11 @@ fun SetupScreen(
                         val (ok, msg) = setTelegramWebhook(botToken.text.trim())
                         webhookInProgress = false
                         webhookStatus = msg
+                        if (!ok) error = msg
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !webhookInProgress
+                enabled = !webhookInProgress && !saveInProgress
             ) {
                 if (webhookInProgress) {
                     CircularProgressIndicator(
@@ -171,7 +182,10 @@ fun SetupScreen(
 
             OutlinedTextField(
                 value = nickname,
-                onValueChange = { nickname = it },
+                onValueChange = {
+                    nickname = it
+                    error = null
+                },
                 label = { Text("Device Nickname") },
                 modifier = Modifier.fillMaxWidth(),
                 colors = OutlinedTextFieldDefaults.colors(
@@ -191,27 +205,50 @@ fun SetupScreen(
 
             Button(
                 onClick = {
+                    error = null
+                    webhookStatus = null
                     if (botToken.text.isBlank() || nickname.text.isBlank()) {
                         error = "Please enter both Bot Token and Nickname."
-                    } else {
+                        return@Button
+                    }
+                    saveInProgress = true
+                    coroutineScope.launch {
+                        val oldToken = Preferences.getBotToken(context)
                         saveSetup(context, botToken.text, nickname.text)
-                        coroutineScope.launch {
-                            val oldToken = Preferences.getBotToken(context)
-                            if (botToken.text.trim() != (oldToken ?: "")) {
-                                webhookInProgress = true
-                                val (ok, msg) = setTelegramWebhook(botToken.text.trim())
-                                webhookInProgress = false
-                                webhookStatus = msg
-                            }
-                            // Register device with backend
-                            registerDeviceWithBackend(context, botToken.text, nickname.text)
-                            onSetupComplete()
+                        var webhookOk = true
+                        var webhookMsg: String? = null
+                        // Set webhook if token changed
+                        if (botToken.text.trim() != (oldToken ?: "")) {
+                            val (ok, msg) = setTelegramWebhook(botToken.text.trim())
+                            webhookOk = ok
+                            webhookMsg = msg
+                            webhookStatus = msg
                         }
+                        if (!webhookOk) {
+                            error = webhookMsg
+                            saveInProgress = false
+                            return@launch
+                        }
+                        val (regOk, regMsg) = registerDeviceWithBackend(context, botToken.text, nickname.text)
+                        if (!regOk) {
+                            error = regMsg
+                            saveInProgress = false
+                            return@launch
+                        }
+                        saveInProgress = false
+                        onSetupComplete()
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !webhookInProgress
+                enabled = !webhookInProgress && !saveInProgress
             ) {
+                if (saveInProgress) {
+                    CircularProgressIndicator(
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
                 Text("Save & Continue")
             }
 
