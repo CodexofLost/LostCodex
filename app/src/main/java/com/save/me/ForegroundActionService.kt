@@ -53,8 +53,6 @@ class ForegroundActionService : Service() {
 
         log("onStartCommand: action=$action, commandId=$commandId, startId=$startId")
 
-        val type = getForegroundServiceType(action)
-        log("showNotificationForAction: action=$action, foregroundServiceType=$type")
         showNotificationForAction(action)
 
         val job = serviceScope.launch {
@@ -80,8 +78,8 @@ class ForegroundActionService : Service() {
                     }
                     "audio" -> handleAudioRecording(intent, chatId, commandId)
                     "location" -> handleLocation(chatId, commandId)
-                    "ring" -> handleRing(commandId)
-                    "vibrate" -> handleVibrate(commandId)
+                    "ring" -> handleRingInBackground(commandId)
+                    "vibrate" -> handleVibrateInBackground(commandId)
                     else -> {
                         log("Unknown action: $action")
                         if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
@@ -207,42 +205,56 @@ class ForegroundActionService : Service() {
         }
     }
 
-    private fun handleRing(commandId: Long) {
+    // --- Background-safe ring
+    private fun handleRingInBackground(commandId: Long) {
         val duration = 5
         val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val oldVolume = audioManager.getStreamVolume(AudioManager.STREAM_RING)
         val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_RING)
-        try {
-            audioManager.setStreamVolume(AudioManager.STREAM_RING, maxVolume, 0)
-            val ringtone = RingtoneManager.getRingtone(applicationContext, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
-            ringtone.play()
-            Handler(Looper.getMainLooper()).postDelayed({
-                ringtone.stop()
-                audioManager.setStreamVolume(AudioManager.STREAM_RING, oldVolume, 0)
+        val ringThread = HandlerThread("RingThread").apply { start() }
+        val handler = Handler(ringThread.looper)
+        handler.post {
+            try {
+                audioManager.setStreamVolume(AudioManager.STREAM_RING, maxVolume, 0)
+                val ringtone = RingtoneManager.getRingtone(applicationContext, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
+                ringtone.play()
+                Handler(Looper.getMainLooper()).postDelayed({
+                    ringtone.stop()
+                    audioManager.setStreamVolume(AudioManager.STREAM_RING, oldVolume, 0)
+                    ringThread.quitSafely()
+                    if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
+                }, (duration * 1000).toLong())
+            } catch (e: Exception) {
+                log("FAILURE: Exception in handleRing: ${e.message}")
+                ringThread.quitSafely()
                 if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
-            }, (duration * 1000).toLong())
-        } catch (e: Exception) {
-            log("FAILURE: Exception in handleRing: ${e.message}")
-            if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
+            }
         }
     }
 
-    private fun handleVibrate(commandId: Long) {
+    // --- Background-safe vibrate
+    private fun handleVibrateInBackground(commandId: Long) {
         val duration = 2000L
-        try {
-            val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator.vibrate(VibrationEffect.createOneShot(duration, VibrationEffect.DEFAULT_AMPLITUDE))
-            } else {
-                @Suppress("DEPRECATION")
-                vibrator.vibrate(duration)
-            }
-            Handler(Looper.getMainLooper()).postDelayed({
+        val vibrateThread = HandlerThread("VibrateThread").apply { start() }
+        val handler = Handler(vibrateThread.looper)
+        handler.post {
+            try {
+                val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    vibrator.vibrate(VibrationEffect.createOneShot(duration, VibrationEffect.DEFAULT_AMPLITUDE))
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator.vibrate(duration)
+                }
+                Handler(Looper.getMainLooper()).postDelayed({
+                    vibrateThread.quitSafely()
+                    if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
+                }, duration)
+            } catch (e: Exception) {
+                log("FAILURE: Exception in handleVibrate: ${e.message}")
+                vibrateThread.quitSafely()
                 if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
-            }, duration)
-        } catch (e: Exception) {
-            log("FAILURE: Exception in handleVibrate: ${e.message}")
-            if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
+            }
         }
     }
 
@@ -300,6 +312,7 @@ class ForegroundActionService : Service() {
             .build()
         val type = getForegroundServiceType(action)
         log("Calling startForeground: type=$type for action=$action")
+        // --- FIX: Only specify type for actions that need it, and NEVER pass type=0!
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && type != 0) {
             try {
                 startForeground(1, notification, type)
@@ -309,6 +322,7 @@ class ForegroundActionService : Service() {
                 return
             }
         } else {
+            // Never pass type=0 to startForeground! Use classic 2-arg version for vibrate/ring/etc.
             startForeground(1, notification)
         }
     }
@@ -319,6 +333,7 @@ class ForegroundActionService : Service() {
             "video" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             "audio" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             "location" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            // For vibrate/ring, use 0 so we don't request a special type
             else -> 0
         }
     }

