@@ -32,11 +32,9 @@ class ForegroundActionService : Service() {
         val chatId = intent?.getStringExtra("chat_id")
         val commandId = intent?.getLongExtra("command_id", -1L) ?: System.currentTimeMillis()
 
-        // --- 1. Wake the screen if camera/video (do not try to unlock, just wake the screen)
         if (action == "photo" || action == "video") {
             wakeScreenOnly()
             log("WakeLock (screen on only) acquired at onStartCommand entry (before notification/foreground)")
-            // Give a brief delay to allow the screen to turn on (optional, but some devices are slow)
             try {
                 Thread.sleep(350)
             } catch (_: Exception) {}
