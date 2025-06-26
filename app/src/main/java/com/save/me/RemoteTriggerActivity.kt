@@ -22,6 +22,10 @@ class RemoteTriggerActivity : Activity() {
             setTurnScreenOn(true)
         }
 
+        // Ensure this activity is not kept in the history stack (for extra safety)
+        // This is also set in the manifest, but we do it here for redundancy
+        intent.addFlags(Intent.FLAG_ACTIVITY_NO_HISTORY or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+
         val serviceIntent = Intent(this, ForegroundActionService::class.java)
         intent?.extras?.let { serviceIntent.putExtras(it) }
 
@@ -39,6 +43,8 @@ class RemoteTriggerActivity : Activity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                 setTurnScreenOn(false)
             }
+            // Move task to back so MainActivity does not come to foreground
+            moveTaskToBack(true)
             // Finish activity immediately
             finish()
         }
