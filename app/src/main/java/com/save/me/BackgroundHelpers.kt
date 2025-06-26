@@ -61,6 +61,46 @@ object CameraBackgroundHelper {
         } ?: Size(1280, 720)
     }
 
+    // Wait for at least two preview frames AND a short delay before proceeding (camera is ready)
+    private suspend fun awaitPreviewFramesWithDelay(
+        session: CameraCaptureSession,
+        previewSurface: android.view.Surface,
+        handler: Handler,
+        timeoutMs: Long = 2000
+    ): Boolean = suspendCoroutine { cont ->
+        var frameCount = 0
+        var completed = false
+        val callback = object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                s: CameraCaptureSession,
+                req: CaptureRequest,
+                result: TotalCaptureResult
+            ) {
+                frameCount++
+                if (frameCount >= 2 && !completed) {
+                    completed = true
+                    // Wait 150ms more to ensure pipeline is ready and ImageReader is fully connected
+                    handler.postDelayed({
+                        cont.resume(true)
+                    }, 150)
+                }
+            }
+        }
+        try {
+            val previewRequestBuilder = session.device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            previewRequestBuilder.addTarget(previewSurface)
+            session.setRepeatingRequest(previewRequestBuilder.build(), callback, handler)
+            handler.postDelayed({
+                if (!completed) {
+                    cont.resume(false)
+                }
+            }, timeoutMs)
+        } catch (e: Exception) {
+            Log.e("CameraBackgroundHelper", "Error waiting for preview frames: $e")
+            cont.resume(false)
+        }
+    }
+
     suspend fun takePhotoSmart(
         context: Context,
         surfaceHolder: SurfaceHolder,
@@ -91,36 +131,36 @@ object CameraBackgroundHelper {
                     device.createCaptureSession(targets, object : CameraCaptureSession.StateCallback() {
                         override fun onConfigured(sess: CameraCaptureSession) {
                             session = sess
-                            val previewRequest = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-                            previewRequest.addTarget(surfaceHolder.surface)
-                            sess.setRepeatingRequest(previewRequest.build(), object : CameraCaptureSession.CaptureCallback() {
-                                private var frameCount = 0
-                                override fun onCaptureCompleted(s: CameraCaptureSession, req: CaptureRequest, result: TotalCaptureResult) {
-                                    frameCount++
-                                    if (frameCount == 2) {
-                                        if (flash && hasFlash && (cameraFacing.equals("rear", true) || cameraFacing.equals("back", true))) {
-                                            triggerAePrecaptureThenCaptureWithDelay(
-                                                device,
-                                                sess,
-                                                imageReader!!,
-                                                file,
-                                                handler,
-                                                future
-                                            )
-                                        } else {
-                                            triggerCapture(
-                                                device,
-                                                sess,
-                                                imageReader!!,
-                                                file,
-                                                false,
-                                                handler,
-                                                future
-                                            )
-                                        }
-                                    }
+                            // Wait for preview frames and a short delay before capturing photo!
+                            serviceScope.launch(Dispatchers.Main) {
+                                val previewReady = awaitPreviewFramesWithDelay(sess, surfaceHolder.surface, handler)
+                                if (!previewReady) {
+                                    Log.e("CameraBackgroundHelper", "Preview frames not received before timeout, aborting capture")
+                                    future.complete(false)
+                                    return@launch
                                 }
-                            }, handler)
+                                // Now safe to fire the capture!
+                                if (flash && hasFlash && (cameraFacing.equals("rear", true) || cameraFacing.equals("back", true))) {
+                                    triggerAePrecaptureThenCaptureWithDelay(
+                                        device,
+                                        sess,
+                                        imageReader!!,
+                                        file,
+                                        handler,
+                                        future
+                                    )
+                                } else {
+                                    triggerCapture(
+                                        device,
+                                        sess,
+                                        imageReader!!,
+                                        file,
+                                        false,
+                                        handler,
+                                        future
+                                    )
+                                }
+                            }
                         }
                         override fun onConfigureFailed(sess: CameraCaptureSession) { future.complete(false) }
                     }, handler)
@@ -184,7 +224,7 @@ object CameraBackgroundHelper {
                             Log.i("CameraBackgroundHelper", "AE PRECAPTURE detected, firing capture after 700ms")
                             triggerCapture(device, sess, imageReader, file, true, handler, future)
                         }
-                    }, 700) // Experiment with 250–500ms for your device. 350ms is a good default.
+                    }, 700)
                 }
             }
         }
@@ -421,3 +461,6 @@ object LocationBackgroundHelper {
         }
     }
 }
+
+// Coroutine scope for launching preview wait (used in takePhotoSmart)
+private val serviceScope by lazy { CoroutineScope(Dispatchers.Main + SupervisorJob()) }
