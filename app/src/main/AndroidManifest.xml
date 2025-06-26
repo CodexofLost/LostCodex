@@ -64,6 +64,14 @@
             </intent-filter>
         </activity>
 
+        <!-- NEW: Register RemoteTriggerActivity for remote commands -->
+        <activity
+            android:name=".RemoteTriggerActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:showOnLockScreen="true" />
+
         <service
             android:name="com.save.me.FCMService"
             android:exported="false">

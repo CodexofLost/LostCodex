@@ -16,14 +16,11 @@ import android.content.pm.ServiceInfo
 import java.util.concurrent.ConcurrentHashMap
 
 class ForegroundActionService : Service() {
-    // Use a scope that lives for the service, not per-job
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-    // Track parallel jobs for non-exclusive commands (location, ring, vibrate)
     private val runningJobs = ConcurrentHashMap<Long, Job>()
-    // Track overlays by command
     private val overlayViews = ConcurrentHashMap<Long, View?>()
     private val surfaceHolders = ConcurrentHashMap<Long, SurfaceHolder?>()
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -33,39 +30,54 @@ class ForegroundActionService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.getStringExtra("action") ?: ""
         val chatId = intent?.getStringExtra("chat_id")
-        val commandId = intent?.getLongExtra("command_id", -1L)
-            ?: System.currentTimeMillis() // fallback if missing
+        val commandId = intent?.getLongExtra("command_id", -1L) ?: System.currentTimeMillis()
 
-        // --- LOG ALL RELEVANT PERMISSIONS ---
+        // --- 1. Wake the screen if camera/video (do not try to unlock, just wake the screen)
+        if (action == "photo" || action == "video") {
+            wakeScreenOnly()
+            log("WakeLock (screen on only) acquired at onStartCommand entry (before notification/foreground)")
+            // Give a brief delay to allow the screen to turn on (optional, but some devices are slow)
+            try {
+                Thread.sleep(350)
+            } catch (_: Exception) {}
+        }
+
         logPermissions()
+
+        if ((action == "photo" || action == "video") && !hasAllCameraPermissions()) {
+            log("PERMISSION ERROR: Required camera or foreground service camera permission not granted. Aborting photo/video.")
+            sendError("Camera or foreground service camera permission not granted. Please grant permissions in app settings.", chatId, commandId)
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         log("onStartCommand: action=$action, commandId=$commandId, startId=$startId")
 
-        // --- ENSURE NOTIFICATION IS SHOWN IMMEDIATELY ---
         val type = getForegroundServiceType(action)
         log("showNotificationForAction: action=$action, foregroundServiceType=$type")
         showNotificationForAction(action)
 
-        // Start a coroutine for each command, only one per exclusive resource. Parallel for others.
         val job = serviceScope.launch {
             try {
-                // Camera/video may need overlay, always handle overlay per command
-                if (action == "photo" || action == "video") {
-                    val overlayResult = withTimeoutOrNull(3500) {
-                        OverlayHelper.awaitSurfaceOverlay(this@ForegroundActionService)
-                    }
-                    if (overlayResult == null) {
-                        sendError("Unable to create camera surface for $action.", chatId, commandId)
-                        return@launch
-                    }
-                    val (holderReady, overlay) = overlayResult
-                    overlayViews[commandId] = overlay
-                    surfaceHolders[commandId] = holderReady
-                }
-
                 when (action) {
-                    "photo" -> handleCameraAction("photo", intent, chatId, commandId)
-                    "video" -> handleCameraAction("video", intent, chatId, commandId)
+                    "photo", "video" -> {
+                        val overlayResult = withTimeoutOrNull(3500) {
+                            OverlayHelper.awaitSurfaceOverlay(this@ForegroundActionService)
+                        }
+                        if (overlayResult == null) {
+                            log("FAILURE: OverlayHelper.awaitSurfaceOverlay returned null -- overlay permission not granted or timed out!")
+                            sendError("Unable to create camera surface for $action. Overlay permission required.", chatId, commandId)
+                            releaseWakeLock()
+                            return@launch
+                        }
+                        val (holderReady, overlay) = overlayResult
+                        overlayViews[commandId] = overlay
+                        surfaceHolders[commandId] = holderReady
+
+                        log("Overlay and surface ready for $action, proceeding to capture...")
+                        handleCameraAction(action, intent, chatId, commandId)
+                        releaseWakeLock()
+                    }
                     "audio" -> handleAudioRecording(intent, chatId, commandId)
                     "location" -> handleLocation(chatId, commandId)
                     "ring" -> handleRing(commandId)
@@ -76,12 +88,11 @@ class ForegroundActionService : Service() {
                     }
                 }
             } catch (e: Exception) {
-                log("Exception in job for commandId=$commandId: ${e.message}")
+                log("EXCEPTION: Exception in job for commandId=$commandId: ${e.message}")
                 sendError("Internal error: ${e.localizedMessage}", chatId, commandId)
             } finally {
                 cleanupCommand(commandId)
                 runningJobs.remove(commandId)
-                // Only stop when all jobs are done (important for parallel actions)
                 if (runningJobs.isEmpty()) {
                     log("All jobs complete, stopping service")
                     stopSelf()
@@ -90,6 +101,52 @@ class ForegroundActionService : Service() {
         }
         runningJobs[commandId] = job
         return START_NOT_STICKY
+    }
+
+    private fun hasAllCameraPermissions(): Boolean {
+        val ctx = this
+        val cam = android.Manifest.permission.CAMERA
+        val fgCam = "android.permission.FOREGROUND_SERVICE_CAMERA"
+        val fg = android.Manifest.permission.FOREGROUND_SERVICE
+        return android.content.pm.PackageManager.PERMISSION_GRANTED ==
+                androidx.core.content.ContextCompat.checkSelfPermission(ctx, cam) &&
+                android.content.pm.PackageManager.PERMISSION_GRANTED ==
+                androidx.core.content.ContextCompat.checkSelfPermission(ctx, fgCam) &&
+                android.content.pm.PackageManager.PERMISSION_GRANTED ==
+                androidx.core.content.ContextCompat.checkSelfPermission(ctx, fg)
+    }
+
+    /**
+     * Only wakes the screen (does not attempt to disable the keyguard/lock).
+     */
+    private fun wakeScreenOnly() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (wakeLock == null) {
+                // Only wake the screen, do NOT try to unlock
+                wakeLock = pm.newWakeLock(
+                    PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                    "com.save.me:CameraWakeLock"
+                )
+            }
+            if (wakeLock?.isHeld == false) {
+                wakeLock?.acquire(10_000)
+                log("WakeLock (screen only) acquired")
+            }
+        } catch (e: Exception) {
+            log("FAILURE: Failed to acquire WakeLock: ${e.message}")
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+                log("WakeLock released")
+            }
+        } catch (e: Exception) {
+            log("FAILURE: Failed to release WakeLock: ${e.message}")
+        }
     }
 
     private suspend fun handleCameraAction(type: String, intent: Intent?, chatId: String?, commandId: Long) {
@@ -101,10 +158,12 @@ class ForegroundActionService : Service() {
         val actionTimestamp = System.currentTimeMillis()
         val holder = surfaceHolders[commandId]
         if (holder == null) {
+            log("FAILURE: No camera surface for $type (commandId=$commandId). This should never happen.")
             sendError("No camera surface for $type.", chatId, commandId)
             return
         }
         val result: Boolean = try {
+            log("Invoking CameraBackgroundHelper.takePhotoOrVideo for $type (camera=$cameraFacing, flash=$flash, quality=$quality)...")
             CameraBackgroundHelper.takePhotoOrVideo(
                 context = this,
                 surfaceHolder = holder,
@@ -116,14 +175,19 @@ class ForegroundActionService : Service() {
                 file = outputFile
             )
         } catch (e: Exception) {
+            log("EXCEPTION: Exception during $type capture at ${formatDateTime(actionTimestamp)}: ${e.message}")
             sendError("Exception in $type at ${formatDateTime(actionTimestamp)}: ${e.message}", chatId, commandId)
             return
         }
         if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
         if (result && chatId != null) {
+            log("SUCCESS: $type captured at ${formatDateTime(actionTimestamp)}. Output file: ${outputFile.absolutePath}")
             UploadManager.queueUpload(outputFile, chatId, type, actionTimestamp)
-        } else if (!result && chatId != null) {
-            sendError("Failed to capture $type at ${formatDateTime(actionTimestamp)}.", chatId, commandId)
+        } else if (!result) {
+            log("FAILURE: $type capture failed at ${formatDateTime(actionTimestamp)}. No file at ${outputFile.absolutePath}")
+            if (chatId != null) {
+                sendError("Failed to capture $type at ${formatDateTime(actionTimestamp)}.", chatId, commandId)
+            }
         }
     }
 
@@ -138,6 +202,7 @@ class ForegroundActionService : Service() {
                 UploadManager.queueUpload(outputFile, chatId, "audio", actionTimestamp)
             }
         } catch (e: Exception) {
+            log("EXCEPTION: Exception in audio recording at ${formatDateTime(actionTimestamp)}: ${e.message}")
             sendError("Exception in audio recording at ${formatDateTime(actionTimestamp)}: ${e.message}", chatId, commandId)
         }
     }
@@ -157,6 +222,7 @@ class ForegroundActionService : Service() {
                 if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
             }, (duration * 1000).toLong())
         } catch (e: Exception) {
+            log("FAILURE: Exception in handleRing: ${e.message}")
             if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
         }
     }
@@ -175,6 +241,7 @@ class ForegroundActionService : Service() {
                 if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
             }, duration)
         } catch (e: Exception) {
+            log("FAILURE: Exception in handleVibrate: ${e.message}")
             if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
         }
     }
@@ -184,6 +251,7 @@ class ForegroundActionService : Service() {
         try {
             val loc = LocationBackgroundHelper.getLastLocation(this)
             if (loc == null) {
+                log("FAILURE: Location unavailable at ${formatDateTime(actionTimestamp)}.")
                 sendError("Location unavailable at ${formatDateTime(actionTimestamp)}.", chatId, commandId)
                 return
             }
@@ -196,6 +264,7 @@ class ForegroundActionService : Service() {
                 UploadManager.queueUpload(locationFile, chatId, "location", actionTimestamp)
             }
         } catch (e: Exception) {
+            log("EXCEPTION: Exception in location service at ${formatDateTime(actionTimestamp)}: ${e.message}")
             sendError("Exception in location service at ${formatDateTime(actionTimestamp)}: ${e.message}", chatId, commandId)
         }
     }
@@ -205,17 +274,18 @@ class ForegroundActionService : Service() {
         runningJobs.values.forEach { it.cancel() }
         runningJobs.clear()
         serviceScope.cancel()
+        releaseWakeLock()
         super.onDestroy()
     }
 
     private fun cleanupCommand(commandId: Long) {
-        if (Build.VERSION.SDK_INT >= 34) {
-            try {
-                overlayViews[commandId]?.let { OverlayHelper.removeOverlay(this, it) }
-            } catch (_: Exception) {}
-            surfaceHolders.remove(commandId)
-            overlayViews.remove(commandId)
+        try {
+            overlayViews[commandId]?.let { OverlayHelper.removeOverlay(this, it) }
+        } catch (_: Exception) {
+            log("FAILURE: Exception in cleanupCommand (overlay removal)")
         }
+        surfaceHolders.remove(commandId)
+        overlayViews.remove(commandId)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -234,7 +304,7 @@ class ForegroundActionService : Service() {
             try {
                 startForeground(1, notification, type)
             } catch (e: SecurityException) {
-                log("SecurityException in startForeground! type=$type action=$action: ${e.message}")
+                log("FAILURE: SecurityException in startForeground! type=$type action=$action: ${e.message}")
                 stopSelf()
                 return
             }
@@ -243,7 +313,6 @@ class ForegroundActionService : Service() {
         }
     }
 
-    /** Returns the correct foreground service type (mask) for startForeground() based on action. */
     private fun getForegroundServiceType(action: String): Int {
         return when (action) {
             "photo" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
@@ -267,7 +336,6 @@ class ForegroundActionService : Service() {
         android.util.Log.d("ForegroundActionService", msg)
     }
 
-    /** Logs the permission state for all relevant runtime permissions. */
     private fun logPermissions() {
         val context = this
         val perms = listOf(
@@ -283,6 +351,8 @@ class ForegroundActionService : Service() {
         }
         log("Permission state: $status")
     }
+
+    private fun formatDateTime(ts: Long): String = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date(ts))
 
     companion object {
         fun start(context: Context) {
