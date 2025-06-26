@@ -36,7 +36,6 @@ class ForegroundActionService : Service() {
         if (action == "photo" || action == "video") {
             wakeScreenOnly()
             log("WakeLock (screen on only) acquired at onStartCommand entry (before notification/foreground)")
-            // Give a brief delay to allow the screen to turn on (optional, but some devices are slow)
             try {
                 Thread.sleep(350)
             } catch (_: Exception) {}
@@ -53,8 +52,6 @@ class ForegroundActionService : Service() {
 
         log("onStartCommand: action=$action, commandId=$commandId, startId=$startId")
 
-        val type = getForegroundServiceType(action)
-        log("showNotificationForAction: action=$action, foregroundServiceType=$type")
         showNotificationForAction(action)
 
         val job = serviceScope.launch {
@@ -80,8 +77,8 @@ class ForegroundActionService : Service() {
                     }
                     "audio" -> handleAudioRecording(intent, chatId, commandId)
                     "location" -> handleLocation(chatId, commandId)
-                    "ring" -> handleRing(commandId)
-                    "vibrate" -> handleVibrate(commandId)
+                    "ring" -> handleRingInBackground(commandId)
+                    "vibrate" -> handleVibrateInBackground(commandId)
                     else -> {
                         log("Unknown action: $action")
                         if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
@@ -116,14 +113,10 @@ class ForegroundActionService : Service() {
                 androidx.core.content.ContextCompat.checkSelfPermission(ctx, fg)
     }
 
-    /**
-     * Only wakes the screen (does not attempt to disable the keyguard/lock).
-     */
     private fun wakeScreenOnly() {
         try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             if (wakeLock == null) {
-                // Only wake the screen, do NOT try to unlock
                 wakeLock = pm.newWakeLock(
                     PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
                     "com.save.me:CameraWakeLock"
@@ -207,42 +200,54 @@ class ForegroundActionService : Service() {
         }
     }
 
-    private fun handleRing(commandId: Long) {
+    private fun handleRingInBackground(commandId: Long) {
         val duration = 5
         val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val oldVolume = audioManager.getStreamVolume(AudioManager.STREAM_RING)
         val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_RING)
-        try {
-            audioManager.setStreamVolume(AudioManager.STREAM_RING, maxVolume, 0)
-            val ringtone = RingtoneManager.getRingtone(applicationContext, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
-            ringtone.play()
-            Handler(Looper.getMainLooper()).postDelayed({
-                ringtone.stop()
-                audioManager.setStreamVolume(AudioManager.STREAM_RING, oldVolume, 0)
+        val ringThread = HandlerThread("RingThread").apply { start() }
+        val handler = Handler(ringThread.looper)
+        handler.post {
+            try {
+                audioManager.setStreamVolume(AudioManager.STREAM_RING, maxVolume, 0)
+                val ringtone = RingtoneManager.getRingtone(applicationContext, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
+                ringtone.play()
+                Handler(Looper.getMainLooper()).postDelayed({
+                    ringtone.stop()
+                    audioManager.setStreamVolume(AudioManager.STREAM_RING, oldVolume, 0)
+                    ringThread.quitSafely()
+                    if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
+                }, (duration * 1000).toLong())
+            } catch (e: Exception) {
+                log("FAILURE: Exception in handleRing: ${e.message}")
+                ringThread.quitSafely()
                 if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
-            }, (duration * 1000).toLong())
-        } catch (e: Exception) {
-            log("FAILURE: Exception in handleRing: ${e.message}")
-            if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
+            }
         }
     }
 
-    private fun handleVibrate(commandId: Long) {
+    private fun handleVibrateInBackground(commandId: Long) {
         val duration = 2000L
-        try {
-            val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator.vibrate(VibrationEffect.createOneShot(duration, VibrationEffect.DEFAULT_AMPLITUDE))
-            } else {
-                @Suppress("DEPRECATION")
-                vibrator.vibrate(duration)
-            }
-            Handler(Looper.getMainLooper()).postDelayed({
+        val vibrateThread = HandlerThread("VibrateThread").apply { start() }
+        val handler = Handler(vibrateThread.looper)
+        handler.post {
+            try {
+                val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    vibrator.vibrate(VibrationEffect.createOneShot(duration, VibrationEffect.DEFAULT_AMPLITUDE))
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator.vibrate(duration)
+                }
+                Handler(Looper.getMainLooper()).postDelayed({
+                    vibrateThread.quitSafely()
+                    if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
+                }, duration)
+            } catch (e: Exception) {
+                log("FAILURE: Exception in handleVibrate: ${e.message}")
+                vibrateThread.quitSafely()
                 if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
-            }, duration)
-        } catch (e: Exception) {
-            log("FAILURE: Exception in handleVibrate: ${e.message}")
-            if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
+            }
         }
     }
 
@@ -300,6 +305,7 @@ class ForegroundActionService : Service() {
             .build()
         val type = getForegroundServiceType(action)
         log("Calling startForeground: type=$type for action=$action")
+        // THE FIX: Never pass the 3-argument version if type==0!
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && type != 0) {
             try {
                 startForeground(1, notification, type)
