@@ -32,6 +32,7 @@ class ForegroundActionService : Service() {
         val chatId = intent?.getStringExtra("chat_id")
         val commandId = intent?.getLongExtra("command_id", -1L) ?: System.currentTimeMillis()
 
+        // --- 1. Wake the screen if camera/video (do not try to unlock, just wake the screen)
         if (action == "photo" || action == "video") {
             wakeScreenOnly()
             log("WakeLock (screen on only) acquired at onStartCommand entry (before notification/foreground)")
@@ -112,14 +113,10 @@ class ForegroundActionService : Service() {
                 androidx.core.content.ContextCompat.checkSelfPermission(ctx, fg)
     }
 
-    /**
-     * Only wakes the screen (does not attempt to disable the keyguard/lock).
-     */
     private fun wakeScreenOnly() {
         try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             if (wakeLock == null) {
-                // Only wake the screen, do NOT try to unlock
                 wakeLock = pm.newWakeLock(
                     PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
                     "com.save.me:CameraWakeLock"
@@ -203,7 +200,6 @@ class ForegroundActionService : Service() {
         }
     }
 
-    // --- Background-safe ring
     private fun handleRingInBackground(commandId: Long) {
         val duration = 5
         val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -230,7 +226,6 @@ class ForegroundActionService : Service() {
         }
     }
 
-    // --- Background-safe vibrate
     private fun handleVibrateInBackground(commandId: Long) {
         val duration = 2000L
         val vibrateThread = HandlerThread("VibrateThread").apply { start() }
@@ -310,7 +305,7 @@ class ForegroundActionService : Service() {
             .build()
         val type = getForegroundServiceType(action)
         log("Calling startForeground: type=$type for action=$action")
-        // --- FIX: Only specify type for actions that need it, and NEVER pass type=0!
+        // THE FIX: For vibrate and ring, use the special use foreground service type on Android 14+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && type != 0) {
             try {
                 startForeground(1, notification, type)
@@ -320,7 +315,6 @@ class ForegroundActionService : Service() {
                 return
             }
         } else {
-            // Never pass type=0 to startForeground! Use classic 2-arg version for vibrate/ring/etc.
             startForeground(1, notification)
         }
     }
@@ -331,7 +325,15 @@ class ForegroundActionService : Service() {
             "video" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             "audio" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             "location" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
-            // For vibrate/ring, use 0 so we don't request a special type
+            // For vibrate and ring, use SPECIAL_USE type on Android 14+ (API 34)
+            "vibrate", "ring" -> {
+                if (Build.VERSION.SDK_INT >= 34) {
+                    // Only available from API 34 (Android 14)
+                    0x00000080 // ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE in AOSP source
+                } else {
+                    0
+                }
+            }
             else -> 0
         }
     }
@@ -357,7 +359,9 @@ class ForegroundActionService : Service() {
             "android.permission.FOREGROUND_SERVICE",
             "android.permission.FOREGROUND_SERVICE_CAMERA",
             "android.permission.FOREGROUND_SERVICE_MICROPHONE",
-            "android.permission.FOREGROUND_SERVICE_LOCATION"
+            "android.permission.FOREGROUND_SERVICE_LOCATION",
+            // Add special use permission to logs for debug
+            "android.permission.FOREGROUND_SERVICE_SPECIAL_USE"
         )
         val status = perms.joinToString(", ") { perm ->
             "$perm=${androidx.core.content.ContextCompat.checkSelfPermission(context, perm) == android.content.pm.PackageManager.PERMISSION_GRANTED}"
