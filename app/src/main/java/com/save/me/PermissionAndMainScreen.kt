@@ -132,7 +132,7 @@ fun SetupScreenWithBack(
                         Image(
                             painter = painterResource(id = R.drawable.ic_arrow_back),
                             contentDescription = "Back",
-                            modifier = Modifier.size(28.dp)
+                            modifier = Modifier.size(22.dp)
                         )
                     }
                 }
@@ -177,7 +177,7 @@ fun AnimatedRotateIconButton(
             painter = painterResource(id = iconRes),
             contentDescription = contentDescription,
             modifier = Modifier
-                .size(28.dp)
+                .size(20.dp)
                 .graphicsLayer {
                     rotationZ = rotation.value
                 }

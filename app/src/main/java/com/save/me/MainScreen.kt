@@ -342,7 +342,7 @@ fun PermissionStatusExpandableTab(
                 androidx.compose.foundation.Image(
                     painter = painterResource(id = if (expanded) R.drawable.ic_arrow_drop_down else R.drawable.ic_arrow_right),
                     contentDescription = null,
-                    modifier = Modifier.size(28.dp)
+                    modifier = Modifier.size(15.dp)
                 )
                 Text(
                     "Permissions Status",
@@ -366,7 +366,7 @@ fun PermissionStatusExpandableTab(
                             androidx.compose.foundation.Image(
                                 painter = painterResource(id = if (status.granted) R.drawable.ic_check else R.drawable.ic_close),
                                 contentDescription = null,
-                                modifier = Modifier.size(24.dp),
+                                modifier = Modifier.size(20.dp),
                                 colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(
                                     if (status.granted) Color(0xFF4CAF50) else Color(0xFFF44336)
                                 )
