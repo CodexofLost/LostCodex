@@ -106,7 +106,6 @@ fun SetupScreen(
                 .background(backgroundColor)
                 .padding(24.dp)
         ) {
-            // Only add vertical space if the internal title is shown
             if (showTitle) {
                 Spacer(Modifier.height(48.dp))
                 Text(
@@ -116,7 +115,7 @@ fun SetupScreen(
                 )
                 Spacer(Modifier.height(24.dp))
             } else {
-                Spacer(Modifier.height(8.dp)) // Minimal space when opened from settings
+                Spacer(Modifier.height(8.dp))
             }
 
             OutlinedTextField(

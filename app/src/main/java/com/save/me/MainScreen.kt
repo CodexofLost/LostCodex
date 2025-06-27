@@ -418,7 +418,6 @@ fun StatusDot(active: Boolean) {
     )
 }
 
-// Helper: Check Telegram Bot API connection using getMe
 suspend fun checkTelegramBotApi(token: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
     try {
         val url = java.net.URL("https://api.telegram.org/bot${token}/getMe")

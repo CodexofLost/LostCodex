@@ -13,7 +13,6 @@ class SetupActivity : ComponentActivity() {
         setContent {
             AppTheme {
                 Surface(color = MaterialTheme.colorScheme.background) {
-                    // Use the correct parameter name matching SetupScreen's definition
                     SetupScreen(
                         onSetupComplete = { finish() }
                     )

@@ -30,7 +30,7 @@ fun PermissionAndMainScreen(
     requestOverlayPermission: () -> Unit,
     requestAllFilesPermission: () -> Unit,
     requestBatteryPermission: () -> Unit,
-    forceSetupScreen: Boolean = false // Pass true to force show setup (no back)
+    forceSetupScreen: Boolean = false
 ) {
     val context = LocalContext.current
     var permissionStatuses by remember { mutableStateOf(PermissionsAndOnboarding.getAllPermissionStatuses(context)) }
@@ -48,13 +48,11 @@ fun PermissionAndMainScreen(
 
     if (showSetupScreen) {
         if (forceSetupScreen) {
-            // Show setup with title, no back button (first install)
             SetupScreen(
                 onSetupComplete = { showSetupScreen = false },
                 showTitle = true
             )
         } else {
-            // Show setup with back button in appBar (from settings)
             SetupScreenWithBack(
                 onSetupComplete = { showSetupScreen = false }
             )

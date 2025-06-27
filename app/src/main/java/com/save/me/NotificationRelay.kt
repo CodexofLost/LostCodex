@@ -97,7 +97,6 @@ object NotificationRelay {
             .filter { isUserApp(pm, it) }
     }
 
-    // --- Inline keyboard builders with explicit navigation row and correct page count ---
 
     fun buildAllAppsInlineKeyboard(context: Context, callbackType: String, page: Int = 0): String {
         val pm = context.packageManager
@@ -174,7 +173,6 @@ object NotificationRelay {
         return """{"inline_keyboard":[${rows.joinToString(",")}]}"""
     }
 
-    // --- Core Handler for Adding Noti App ---
 
     fun handleNotiAddPick(context: Context, chatId: String, pkg: String) {
         addAllowedApp(context, pkg)

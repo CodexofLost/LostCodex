@@ -64,10 +64,7 @@ object OverlayHelper {
         ).toInt()
     }
 
-    /**
-     * Safe coroutine-friendly overlay helper: only triggers callback when Surface is really ready.
-     * Callback will be called ONCE, upon surfaceCreated (or error).
-     */
+
     fun showSurfaceOverlay(
         context: Context,
         callback: (SurfaceHolder?, View?) -> Unit,

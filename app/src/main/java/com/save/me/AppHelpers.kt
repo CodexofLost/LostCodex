@@ -16,7 +16,7 @@ import android.util.Log
 import androidx.activity.result.ActivityResultLauncher
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import androidx.core.app.ActivityCompat // <-- FIXED: Correct import
+import androidx.core.app.ActivityCompat
 
 object NotificationHelper {
     const val CHANNEL_ID = "findgram_channel"

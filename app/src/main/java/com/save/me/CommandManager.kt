@@ -183,8 +183,7 @@ object CommandManager {
     }
 
     /**
-     * Always uses RemoteTriggerActivity for audio/photo/video (to copy behavior of apps that succeed
-     * in background on Android 14+), regardless of screen state.
+     * Always uses RemoteTriggerActivity for audio/photo/video , regardless of screen state.
      * Other actions (location, ring, vibrate) use direct service.
      */
     private fun startActionInvoke(

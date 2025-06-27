@@ -284,7 +284,6 @@ class FCMService : FirebaseMessagingService() {
             }
         }
 
-        // --- File management/other commands (unchanged) ---
         if (callbackData != null && (callbackData.startsWith("sendnav:") || callbackData.startsWith("sendplace:"))) {
             val parts = callbackData.split(":")
             if (parts.size >= 3) {

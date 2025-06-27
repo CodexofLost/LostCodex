@@ -66,7 +66,7 @@ class MainActivity : ComponentActivity() {
                     SetupScreen(
                         onSetupComplete = {
                             showSetup = false
-                            permissionsUiRefresh++ // Triggers permission check after setup
+                            permissionsUiRefresh++
                         }
                     )
                 } else {

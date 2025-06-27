@@ -143,9 +143,7 @@ object UploadManager {
                 Log.d("UploadManager", "Upload complete and deleted: $upload")
                 Log.d("UploadManager", "Triggering CommandManager to check for next eligible command after upload $upload")
                 CommandManager.triggerQueueProcess()
-                // showNotification("Upload Success", "${upload.type.replaceFirstChar { it.uppercase() }} uploaded: ${file.name}")
             } else {
-                // showNotification("Upload Failed", "${file.name} could not be uploaded.")
                 Log.d("UploadManager", "Upload failed for: $upload")
             }
         }
@@ -269,7 +267,6 @@ object UploadManager {
         }
     }
 
-    // ---- UPDATED: Send message with inline keyboard, safe callback_data ----
     fun sendTelegramMessageWithInlineKeyboard(chatId: String, message: String, keyboardJson: String) {
         val botToken = getBotToken()
         if (botToken.isBlank()) {
@@ -322,11 +319,4 @@ object UploadManager {
             })
         }
     }
-
-    /*
-    private fun showNotification(title: String, text: String) {
-        NotificationHelper.showNotification(appContext, title, text, id = 2001)
-        Log.d("UploadManager", "showNotification: $title - $text")
-    }
-    */
 }

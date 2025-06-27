@@ -61,7 +61,6 @@ object CameraBackgroundHelper {
         } ?: Size(1280, 720)
     }
 
-    // Wait for at least two preview frames AND a short delay before proceeding (camera is ready)
     private suspend fun awaitPreviewFramesWithDelay(
         session: CameraCaptureSession,
         previewSurface: android.view.Surface,
@@ -79,7 +78,6 @@ object CameraBackgroundHelper {
                 frameCount++
                 if (frameCount >= 2 && !completed) {
                     completed = true
-                    // Wait 150ms more to ensure pipeline is ready and ImageReader is fully connected
                     handler.postDelayed({
                         cont.resume(true)
                     }, 150)
@@ -113,6 +111,7 @@ object CameraBackgroundHelper {
         val chars = cameraManager.getCameraCharacteristics(cameraId)
         val hasFlash = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
         Log.d("CameraBackgroundHelper", "Requested facing: $cameraFacing, Selected cameraId: $cameraId, hasFlash: $hasFlash, requested flash: $flash")
+
         var cameraDevice: CameraDevice? = null
         var session: CameraCaptureSession? = null
         var imageReader: android.media.ImageReader? = null
@@ -127,60 +126,92 @@ object CameraBackgroundHelper {
                 override fun onOpened(device: CameraDevice) {
                     cameraDevice = device
                     imageReader = android.media.ImageReader.newInstance(jpegSize.width, jpegSize.height, ImageFormat.JPEG, 1)
+
+                    imageReader!!.setOnImageAvailableListener({ reader ->
+                        try {
+                            val img = reader.acquireLatestImage()
+                            if (img != null) {
+                                val buffer = img.planes[0].buffer
+                                val bytes = ByteArray(buffer.remaining())
+                                buffer.get(bytes)
+                                file.writeBytes(bytes)
+                                img.close()
+                                future.complete(true)
+                            } else {
+                                Log.e("CameraBackgroundHelper", "Image is null (no data from ImageReader)")
+                                future.complete(false)
+                            }
+                        } catch (e: Exception) {
+                            Log.e("CameraBackgroundHelper", "Exception saving JPEG: $e")
+                            future.complete(false)
+                        } finally {
+                            // --- FIX: Ensure clean release for all versions here ---
+                            try { session?.close() } catch (_: Exception) {}
+                            try { cameraDevice?.close() } catch (_: Exception) {}
+                            try { imageReader?.close() } catch (_: Exception) {}
+                            handlerThread.quitSafely()
+                        }
+                    }, handler)
+
                     val targets = listOf(surfaceHolder.surface, imageReader!!.surface)
                     device.createCaptureSession(targets, object : CameraCaptureSession.StateCallback() {
                         override fun onConfigured(sess: CameraCaptureSession) {
                             session = sess
-                            // Wait for preview frames and a short delay before capturing photo!
                             serviceScope.launch(Dispatchers.Main) {
                                 val previewReady = awaitPreviewFramesWithDelay(sess, surfaceHolder.surface, handler)
                                 if (!previewReady) {
                                     Log.e("CameraBackgroundHelper", "Preview frames not received before timeout, aborting capture")
                                     future.complete(false)
+                                    // --- FIX: Release resources if preview fails ---
+                                    try { session?.close() } catch (_: Exception) {}
+                                    try { cameraDevice?.close() } catch (_: Exception) {}
+                                    try { imageReader?.close() } catch (_: Exception) {}
+                                    handlerThread.quitSafely()
                                     return@launch
                                 }
-                                // Now safe to fire the capture!
                                 if (flash && hasFlash && (cameraFacing.equals("rear", true) || cameraFacing.equals("back", true))) {
                                     triggerAePrecaptureThenCaptureWithDelay(
-                                        device,
-                                        sess,
-                                        imageReader!!,
-                                        file,
-                                        handler,
-                                        future
+                                        device, sess, imageReader!!, file, handler, future
                                     )
                                 } else {
                                     triggerCapture(
-                                        device,
-                                        sess,
-                                        imageReader!!,
-                                        file,
-                                        false,
-                                        handler,
-                                        future
+                                        device, sess, imageReader!!, file, false, handler, future
                                     )
                                 }
                             }
                         }
-                        override fun onConfigureFailed(sess: CameraCaptureSession) { future.complete(false) }
+                        override fun onConfigureFailed(sess: CameraCaptureSession) {
+                            future.complete(false)
+                            // --- FIX: Release resources if session fails ---
+                            try { session?.close() } catch (_: Exception) {}
+                            try { cameraDevice?.close() } catch (_: Exception) {}
+                            try { imageReader?.close() } catch (_: Exception) {}
+                            handlerThread.quitSafely()
+                        }
                     }, handler)
                 }
-                override fun onDisconnected(device: CameraDevice) { future.complete(false) }
-                override fun onError(device: CameraDevice, error: Int) { future.complete(false) }
+                override fun onDisconnected(device: CameraDevice) {
+                    future.complete(false)
+                    try { cameraDevice?.close() } catch (_: Exception) {}
+                    try { session?.close() } catch (_: Exception) {}
+                    try { imageReader?.close() } catch (_: Exception) {}
+                    handlerThread.quitSafely()
+                }
+                override fun onError(device: CameraDevice, error: Int) {
+                    future.complete(false)
+                    try { cameraDevice?.close() } catch (_: Exception) {}
+                    try { session?.close() } catch (_: Exception) {}
+                    try { imageReader?.close() } catch (_: Exception) {}
+                    handlerThread.quitSafely()
+                }
             }, handler)
-            future.await()
+            return@withContext future.await()
         } catch (e: Exception) {
             Log.e("CameraBackgroundHelper", "Photo error: $e")
-            false
-        } finally {
-            try { cameraDevice?.close() } catch (_: Exception) {}
-            try { session?.close() } catch (_: Exception) {}
-            try { imageReader?.close() } catch (_: Exception) {}
-            handlerThread.quitSafely()
+            return@withContext false
         }
     }
 
-    // Wait for AE_STATE_PRECAPTURE, then wait extra 350ms, then capture
     private fun triggerAePrecaptureThenCaptureWithDelay(
         device: CameraDevice,
         sess: CameraCaptureSession,
@@ -198,7 +229,6 @@ object CameraBackgroundHelper {
         var precaptureStarted = false
         var delayPosted = false
 
-        // Timeout: If PRECAPTURE never comes, just shoot after 1.2s
         handler.postDelayed({
             if (!future.isCompleted && !delayPosted) {
                 Log.w("CameraBackgroundHelper", "AE precapture timed out, firing capture anyway (PRECAPTURE never arrived)")
@@ -255,34 +285,12 @@ object CameraBackgroundHelper {
             stillRequest.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             stillRequest.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
         }
-        sess.capture(stillRequest.build(), object : CameraCaptureSession.CaptureCallback() {
-            override fun onCaptureCompleted(
-                s: CameraCaptureSession,
-                req: CaptureRequest,
-                result: TotalCaptureResult
-            ) {
-                try {
-                    val img = imageReader.acquireLatestImage()
-                    if (img != null) {
-                        val buffer = img.planes[0].buffer
-                        val bytes = ByteArray(buffer.remaining())
-                        buffer.get(bytes)
-                        file.writeBytes(bytes)
-                        img.close()
-                        future.complete(true)
-                    } else {
-                        Log.e("CameraBackgroundHelper", "Image is null (no data from ImageReader)")
-                        future.complete(false)
-                    }
-                } catch (e: Exception) {
-                    Log.e("CameraBackgroundHelper", "Exception saving JPEG: $e")
-                    future.complete(false)
-                }
-                try { s.close() } catch (_: Exception) {}
-                try { device.close() } catch (_: Exception) {}
-                try { imageReader.close() } catch (_: Exception) {}
-            }
-        }, handler)
+        try {
+            sess.capture(stillRequest.build(), null, handler)
+        } catch (e: Exception) {
+            Log.e("CameraBackgroundHelper", "Error during still capture: $e")
+            future.complete(false)
+        }
     }
 
     suspend fun recordVideoSmart(
@@ -380,7 +388,11 @@ object CameraBackgroundHelper {
                 override fun onDisconnected(device: CameraDevice) { future.complete(false) }
                 override fun onError(device: CameraDevice, error: Int) { future.complete(false) }
             }, handler)
-            future.await()
+            val result = future.await()
+            if (!result) {
+                Log.e("CameraBackgroundHelper", "Video capture failed: video not saved")
+            }
+            result
         } catch (e: Exception) {
             Log.e("CameraBackgroundHelper", "Video error: $e")
             false
@@ -462,5 +474,4 @@ object LocationBackgroundHelper {
     }
 }
 
-// Coroutine scope for launching preview wait (used in takePhotoSmart)
 private val serviceScope by lazy { CoroutineScope(Dispatchers.Main + SupervisorJob()) }
