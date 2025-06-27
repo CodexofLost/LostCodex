@@ -39,15 +39,15 @@ Below are some screenshots showcasing Findgram's UI and Telegram bot interaction
 
 ### Main App UI
 
-![Main Screen](images/screenshot_main_ui.png)
+![Main Screen](images/app.jpg)
 
-### Permissions Setup
+### Setup Screen
 
-![Permissions](images/screenshot_permissions.png)
+![Setup Screen](images/setup.jpg)
 
 ### Telegram Bot Interaction
 
-![Telegram Bot Remote Control](images/screenshot_telegram_bot.png)
+![Telegram Bot Remote Control](images/bot.jpg)
 
 ## Permissions Required
 
