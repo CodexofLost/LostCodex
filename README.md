@@ -21,7 +21,7 @@
    - Install the app on your Android device.
    - Create a Telegram bot with the help of Botfather and obtain the token.
    - Complete the in-app setup by placing bot token and device nickname in  Setup Screen.
-   - Set the Telegram webhook (in-app button) and register your device.
+   - Set the Telegram webhook (in-app button) and set nickanme to save & continue.
    - Then, Open your bot in Telegram and send /register (nickname)
    - Now, you are ready to send commands via Telegram.
 
