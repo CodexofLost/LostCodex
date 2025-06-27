@@ -40,22 +40,14 @@ Below are some screenshots showcasing Findgram's UI and Telegram bot interaction
 ### Main App UI
 
 ![Main Screen](images/screenshot_main_ui.png)
-*_(Add an image named `screenshot_main_ui.png` to `images/` folder in your repo)_*
 
 ### Permissions Setup
 
 ![Permissions](images/screenshot_permissions.png)
-*_(Add an image named `screenshot_permissions.png` to `images/` folder)_*
 
 ### Telegram Bot Interaction
 
 ![Telegram Bot Remote Control](images/screenshot_telegram_bot.png)
-*_(Add an image named `screenshot_telegram_bot.png` to `images/` folder)_*
-
-> **How to add your screenshots:**  
-> 1. Place your screenshot images in an `images/` folder at the root of this repository.  
-> 2. Use descriptive names like `screenshot_main_ui.png`, `screenshot_permissions.png`, `screenshot_telegram_bot.png`.  
-> 3. The Markdown above will automatically display your images in the README!
 
 ## Permissions Required
 
@@ -81,7 +73,7 @@ The app UI provides an at-a-glance status for all permissions and helps users gr
    Go to [@BotFather](https://t.me/BotFather) on Telegram and create a new bot. Copy the bot token.
 
 2. **Install Findgram:**  
-   Download here and install on target device.
+   Download [here](https://github.com/CodexofLost/Findgram/releases) and install on target device.
 
 3. **Configure:**  
    - Open Findgram.
