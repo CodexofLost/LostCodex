@@ -5,6 +5,7 @@ import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -22,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -56,7 +58,6 @@ fun MainScreen(
     val scope = rememberCoroutineScope()
     val nickname = vm.getCurrentNickname()
     val botToken = vm.getCurrentBotToken()
-    val serviceActive by vm.serviceActive
     val actionInProgress by vm.actionInProgress
     val actionError by vm.actionError
 
@@ -101,9 +102,6 @@ fun MainScreen(
     }
     LaunchedEffect(Unit) {
         refreshConnectionStatuses()
-    }
-    LaunchedEffect(actionInProgress) {
-        vm.refreshServiceStatus()
     }
     LaunchedEffect(actionError) {
         actionError?.let { errorMsg ->
@@ -268,18 +266,6 @@ fun MainScreen(
             Spacer(Modifier.width(8.dp))
             Text(": ${if (telegramStatus) "Connected" else "Not Connected"}")
         }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-        ) {
-            StatusDot(serviceActive)
-            Spacer(Modifier.width(8.dp))
-            Text("Service Status")
-            Spacer(Modifier.width(8.dp))
-            Text(": ${if (serviceActive) "Active" else "Inactive"}")
-        }
         Spacer(Modifier.height(20.dp))
         PermissionStatusExpandableTab(
             activity = activity,
@@ -328,6 +314,62 @@ fun PermissionStatusExpandableTab(
     requestBatteryPermission: () -> Unit,
     requestNotificationAccess: () -> Unit
 ) {
+    val sdkInt = Build.VERSION.SDK_INT
+
+    // Storage permission labels
+    val storageLabels = setOf("All Files Access", "Storage (Read)", "Storage (Write)")
+
+    // Helper: Get permission status by label
+    fun getStatus(label: String) = realPermissions.find { it.name == label }
+
+    val permissionRows = mutableListOf<@Composable () -> Unit>()
+
+    // --- Storage Section ---
+    if (sdkInt >= Build.VERSION_CODES.R) {
+        // Android 11+ (API 30+): ONLY show "All Files Access"
+        getStatus("All Files Access")?.let { status ->
+            permissionRows += {
+                PermissionRow(
+                    name = "All Files Access",
+                    granted = status.granted,
+                    onGrant = requestAllFilesPermission
+                )
+            }
+        }
+    } else {
+        // Android 10 and below: combine Storage (Read & Write)
+        val statusRead = getStatus("Storage (Read)")
+        val statusWrite = getStatus("Storage (Write)")
+        val readGranted = statusRead?.granted == true
+        val writeGranted = statusWrite?.granted == true
+        val granted = readGranted && writeGranted
+        permissionRows += {
+            PermissionRow(
+                name = "Storage (Read & Write)",
+                granted = granted,
+                onGrant = {
+                    val permRead = PermissionsAndOnboarding.getSystemPermissionFromLabel("Storage (Read)")
+                    val permWrite = PermissionsAndOnboarding.getSystemPermissionFromLabel("Storage (Write)")
+                    var requestedAny = false
+                    if (!readGranted && permRead != null && PermissionsAndOnboarding.canRequestPermission(activity, permRead)) {
+                        requestPermission(permRead)
+                        requestedAny = true
+                    }
+                    if (!writeGranted && permWrite != null && PermissionsAndOnboarding.canRequestPermission(activity, permWrite)) {
+                        requestPermission(permWrite)
+                        requestedAny = true
+                    }
+                    if (!requestedAny) {
+                        openAppSettings()
+                    }
+                }
+            )
+        }
+    }
+
+    // --- Non-storage permissions ---
+    val filteredPermissions = realPermissions.filter { it.name !in storageLabels }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -342,7 +384,8 @@ fun PermissionStatusExpandableTab(
                 androidx.compose.foundation.Image(
                     painter = painterResource(id = if (expanded) R.drawable.ic_arrow_drop_down else R.drawable.ic_arrow_right),
                     contentDescription = null,
-                    modifier = Modifier.size(15.dp)
+                    modifier = Modifier.size(15.dp),
+                    colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onSurface)
                 )
                 Text(
                     "Permissions Status",
@@ -356,54 +399,59 @@ fun PermissionStatusExpandableTab(
                 exit = shrinkVertically()
             ) {
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                    realPermissions.forEach { status ->
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 2.dp)
-                        ) {
-                            androidx.compose.foundation.Image(
-                                painter = painterResource(id = if (status.granted) R.drawable.ic_check else R.drawable.ic_close),
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp),
-                                colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(
-                                    if (status.granted) Color(0xFF4CAF50) else Color(0xFFF44336)
-                                )
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(status.name, modifier = Modifier.weight(1f))
-                            if (!status.granted) {
+                    permissionRows.forEach { it() }
+                    filteredPermissions.forEach { status ->
+                        PermissionRow(
+                            name = status.name,
+                            granted = status.granted,
+                            onGrant = {
                                 when (status.name) {
-                                    "Overlay (Draw over apps)" -> {
-                                        TextButton(onClick = requestOverlayPermission) { Text("Grant") }
-                                    }
-                                    "All Files Access" -> {
-                                        TextButton(onClick = requestAllFilesPermission) { Text("Grant") }
-                                    }
-                                    "Ignore Battery Optimization" -> {
-                                        TextButton(onClick = requestBatteryPermission) { Text("Grant") }
-                                    }
-                                    "Notification Access" -> {
-                                        TextButton(onClick = requestNotificationAccess) { Text("Grant") }
-                                    }
+                                    "Overlay (Draw over apps)" -> requestOverlayPermission()
+                                    "Ignore Battery Optimization" -> requestBatteryPermission()
+                                    "Notification Access" -> requestNotificationAccess()
                                     else -> {
                                         val systemPermission = PermissionsAndOnboarding.getSystemPermissionFromLabel(status.name)
                                         val canRequest = systemPermission != null && PermissionsAndOnboarding.canRequestPermission(activity, systemPermission)
-                                        TextButton(onClick = {
-                                            if (canRequest && systemPermission != null) {
-                                                requestPermission(systemPermission)
-                                            } else {
-                                                openAppSettings()
-                                            }
-                                        }) { Text("Grant") }
+                                        if (canRequest && systemPermission != null) {
+                                            requestPermission(systemPermission)
+                                        } else {
+                                            openAppSettings()
+                                        }
                                     }
                                 }
                             }
-                        }
+                        )
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun PermissionRow(
+    name: String,
+    granted: Boolean,
+    onGrant: () -> Unit
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp)
+    ) {
+        androidx.compose.foundation.Image(
+            painter = painterResource(id = if (granted) R.drawable.ic_check else R.drawable.ic_close),
+            contentDescription = null,
+            modifier = Modifier.size(20.dp),
+            colorFilter = ColorFilter.tint(
+                if (granted) Color(0xFF4CAF50) else Color(0xFFF44336)
+            )
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(name, modifier = Modifier.weight(1f))
+        if (!granted) {
+            TextButton(onClick = onGrant) { Text("Grant") }
         }
     }
 }

@@ -1,18 +1,14 @@
 package com.save.me
 
-import android.app.ActivityManager
 import android.app.Application
-import android.content.Context
 import androidx.compose.runtime.*
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.launch
-import com.save.me.ForegroundActionService
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val _serviceActive = mutableStateOf(false)
-    val serviceActive: State<Boolean> get() = _serviceActive
+    // Service status logic removed as per request
 
     private val _actionHistory = mutableStateListOf<RemoteAction>()
     val actionHistory: List<RemoteAction> get() = _actionHistory
@@ -56,27 +52,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _actionError.value = "Failed to run $type action"
                 _lastError.value = completedAction.error
             }
-            refreshServiceStatus()
         }
     }
 
     fun clearError() {
         _actionError.value = null
         _lastError.value = null
-    }
-
-    fun refreshServiceStatus() {
-        _serviceActive.value = isServiceRunning(getApplication(), ForegroundActionService::class.java)
-    }
-
-    private fun isServiceRunning(context: Context, serviceClass: Class<*>): Boolean {
-        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        @Suppress("DEPRECATION")
-        for (service in activityManager.getRunningServices(Int.MAX_VALUE)) {
-            if (serviceClass.name == service.service.className) {
-                return true
-            }
-        }
-        return false
     }
 }

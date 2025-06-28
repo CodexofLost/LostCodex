@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -127,10 +128,12 @@ fun SetupScreenWithBack(
                 title = { Text("Setup Device") },
                 navigationIcon = {
                     IconButton(onClick = onSetupComplete) {
+                        // Tint the back arrow icon with the theme color
                         Image(
                             painter = painterResource(id = R.drawable.ic_arrow_back),
                             contentDescription = "Back",
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(22.dp),
+                            colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onSurface)
                         )
                     }
                 }
@@ -171,6 +174,7 @@ fun AnimatedRotateIconButton(
             if (!isRotating) onClick()
         }
     ) {
+        // Tint the icon with the theme color
         Image(
             painter = painterResource(id = iconRes),
             contentDescription = contentDescription,
@@ -178,7 +182,8 @@ fun AnimatedRotateIconButton(
                 .size(20.dp)
                 .graphicsLayer {
                     rotationZ = rotation.value
-                }
+                },
+            colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onSurface)
         )
     }
 }

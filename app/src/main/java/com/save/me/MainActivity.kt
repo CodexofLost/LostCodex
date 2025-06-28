@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
@@ -76,7 +77,14 @@ class MainActivity : ComponentActivity() {
                         onSetupClick = { showSetup = true },
                         vm = vm,
                         requestPermission = { permission ->
-                            singlePermissionLauncher.launch(permission)
+                            // Only block storage permissions on Android 11+ (handled by All Files Access intent)
+                            val isStorageRead = permission == android.Manifest.permission.READ_EXTERNAL_STORAGE
+                            val isStorageWrite = permission == android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && (isStorageRead || isStorageWrite)) {
+                                // Ignore, All Files Access is handled by a different intent
+                            } else {
+                                singlePermissionLauncher.launch(permission)
+                            }
                         },
                         openAppSettings = {
                             val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
