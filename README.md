@@ -2,7 +2,7 @@
 
 **Findgram** is an advanced Android security and remote control app that enables you to control your device remotely via Telegram bot commands. With Findgram, you can take photos, record videos or audio, fetch your device’s location, ring or vibrate your phone, view and manage files, and relay notifications—all from anywhere in the world using a simple Telegram interface.
 
-## Features
+## Features of Findgram
 
 - 📸 **Remote Camera Control**: Take photos or record videos (front/rear camera, flash, quality options) with background execution, even when the screen is locked.
 - 🎤 **Audio Recording**: Start and receive remote audio recordings.
