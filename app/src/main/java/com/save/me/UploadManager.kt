@@ -14,6 +14,7 @@ import java.io.File
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 
 @Entity(tableName = "pending_uploads")
 data class PendingUpload(
@@ -66,6 +67,9 @@ object UploadManager {
 
     private const val FILE_RETENTION_DAYS = 3
 
+    // --- NEW: Set to track in-progress uploads (thread-safe) ---
+    private val inProgressUploads = ConcurrentHashMap.newKeySet<String>()
+
     private fun getBotToken(): String {
         val token = Preferences.getBotToken(appContext)
         return token ?: ""
@@ -101,7 +105,6 @@ object UploadManager {
             )
             val id = dao.insert(upload)
             Log.d("UploadManager", "Queued upload: $upload (db id: $id)")
-            // showNotification("Queued: $type", "Preparing to upload ${file.name}")
             sendTelegramMessage(chatId, "[${getDeviceNickname()}] Command received: $type. Processing...")
             uploadAllPending()
         }
@@ -113,38 +116,60 @@ object UploadManager {
         Log.d("UploadManager", "Uploading all pending: ${uploads.size} pending uploads.")
         for (upload in uploads) {
             val file = File(upload.filePath)
-            if (!file.exists() || file.length() == 0L) {
-                dao.delete(upload)
-                Log.d("UploadManager", "Skipped upload (file missing): $upload")
-                // showNotification("Skipped: ${upload.type}", "File missing: ${file.name}")
-                sendTelegramMessage(upload.chatId, "[${getDeviceNickname()}] Error: File missing for ${upload.type} at ${formatDateTime(upload.actionTimestamp)}")
+
+            // --- NEW LOGIC: Prevent duplicate uploads ---
+            if (!inProgressUploads.add(upload.filePath)) {
+                Log.d("UploadManager", "Upload in progress for file: ${upload.filePath}, skipping.")
                 continue
             }
-            // showNotification("Uploading: ${upload.type}", "Uploading ${file.name}")
-            Log.d("UploadManager", "Uploading file: ${file.absolutePath} for upload record $upload")
-            val success: Boolean = try {
-                when (upload.type) {
-                    "location" -> sendLocationToTelegram(file, upload.chatId, upload.actionTimestamp)
-                    "photo", "video", "audio" -> uploadFileToTelegram(file, upload.chatId, upload.type, upload.actionTimestamp)
-                    "text" -> uploadFileToTelegram(file, upload.chatId, "text", upload.actionTimestamp)
-                    else -> uploadFileToTelegram(file, upload.chatId, "document", upload.actionTimestamp)
+
+            try {
+                if (!file.exists() || file.length() == 0L) {
+                    dao.delete(upload)
+                    Log.d("UploadManager", "Skipped upload (file missing): $upload")
+                    sendTelegramMessage(upload.chatId, "[${getDeviceNickname()}] Error: File missing for ${upload.type} at ${formatDateTime(upload.actionTimestamp)}")
+                    continue
                 }
-            } catch (e: Exception) {
-                Log.e("UploadManager", "Upload error: ${e.localizedMessage}", e)
-                // showNotification("Upload Error", "Error uploading ${file.name}: ${e.localizedMessage}")
-                sendTelegramMessage(upload.chatId, "[${getDeviceNickname()}] Error uploading ${upload.type}: ${e.localizedMessage} at ${formatDateTime(upload.actionTimestamp)}")
-                false
-            }
-            if (success) {
-                if (file.exists()) {
-                    file.delete()
+
+                // --- Telegram File Size Limit Check ---
+                val maxSizeBytes = when (upload.type) {
+                    "photo" -> 10 * 1024 * 1024 // 10 MB
+                    "video", "audio", "document", "text" -> 50 * 1024 * 1024 // 50 MB
+                    else -> 50 * 1024 * 1024
                 }
-                dao.delete(upload)
-                Log.d("UploadManager", "Upload complete and deleted: $upload")
-                Log.d("UploadManager", "Triggering CommandManager to check for next eligible command after upload $upload")
-                CommandManager.triggerQueueProcess()
-            } else {
-                Log.d("UploadManager", "Upload failed for: $upload")
+                if (file.length() > maxSizeBytes) {
+                    sendTelegramMessage(upload.chatId, "[${getDeviceNickname()}] Error: File too large for Telegram (${file.length() / (1024 * 1024)} MB). Limit is ${maxSizeBytes / (1024 * 1024)} MB for ${upload.type}.")
+                    dao.delete(upload)
+                    Log.d("UploadManager", "File too large for Telegram. Skipping upload: $upload")
+                    continue
+                }
+                Log.d("UploadManager", "Uploading file: ${file.absolutePath} for upload record $upload")
+                val success: Boolean = try {
+                    when (upload.type) {
+                        "location" -> sendLocationToTelegram(file, upload.chatId, upload.actionTimestamp)
+                        "photo", "video", "audio" -> uploadFileToTelegram(file, upload.chatId, upload.type, upload.actionTimestamp)
+                        "text" -> uploadFileToTelegram(file, upload.chatId, "text", upload.actionTimestamp)
+                        else -> uploadFileToTelegram(file, upload.chatId, "document", upload.actionTimestamp)
+                    }
+                } catch (e: Exception) {
+                    Log.e("UploadManager", "Upload error: ${e.localizedMessage}", e)
+                    sendTelegramMessage(upload.chatId, "[${getDeviceNickname()}] Error uploading ${upload.type}: ${e.localizedMessage} at ${formatDateTime(upload.actionTimestamp)}")
+                    false
+                }
+                if (success) {
+                    if (file.exists()) {
+                        file.delete()
+                    }
+                    dao.delete(upload)
+                    Log.d("UploadManager", "Upload complete and deleted: $upload")
+                    Log.d("UploadManager", "Triggering CommandManager to check for next eligible command after upload $upload")
+                    CommandManager.triggerQueueProcess()
+                } else {
+                    Log.d("UploadManager", "Upload failed for: $upload")
+                }
+            } finally {
+                // --- NEW: Always remove from in-progress after attempt ---
+                inProgressUploads.remove(upload.filePath)
             }
         }
     }
@@ -183,6 +208,11 @@ object UploadManager {
         }
     }
 
+    /**
+     * Telegram Bot API file size limits (as of Sep 2025):
+     * - photo: 10 MB
+     * - video/audio/document/text: 50 MB
+     */
     fun uploadFileToTelegram(file: File, chatId: String, type: String, actionTimestamp: Long): Boolean {
         val botToken = getBotToken()
         if (botToken.isBlank()) {
@@ -210,6 +240,19 @@ object UploadManager {
             "video" -> "video/mp4"
             "audio" -> "audio/mp4"
             else -> "application/octet-stream"
+        }
+
+        // --- Telegram File Size Limit Check ---
+        val maxSizeBytes = when (type) {
+            "photo" -> 10 * 1024 * 1024 // 10 MB
+            "video" -> 50 * 1024 * 1024 // 50 MB
+            "audio" -> 50 * 1024 * 1024 // 50 MB
+            else -> 50 * 1024 * 1024 // document/text: 50 MB
+        }
+        if (file.length() > maxSizeBytes) {
+            sendTelegramMessage(chatId, "[${getDeviceNickname()}] Error: File too large for Telegram (${file.length() / (1024 * 1024)} MB). Limit is ${maxSizeBytes / (1024 * 1024)} MB for $type.")
+            Log.d("UploadManager", "File too large for Telegram. Skipping upload: $file")
+            return false
         }
 
         val client = OkHttpClient()
@@ -294,7 +337,6 @@ object UploadManager {
             Log.e("UploadManager", "Exception sending inline keyboard to Telegram: ${e.localizedMessage}", e)
         }
     }
-    // ---- END UPDATED ----
 
     private fun performRetentionCleanup() {
         val retentionMillis = FILE_RETENTION_DAYS * 24 * 60 * 60 * 1000L

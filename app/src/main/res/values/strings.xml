@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Findgram</string>
+    <string name="app_name">LostCodex</string>
     <string name="permission_required">Permissions Required</string>
     <string name="grant_permissions">Grant Permissions</string>
     <string name="exit">Exit</string>
@@ -11,5 +11,5 @@
     <string name="permissions_needed">The app needs the following permissions:\n\n%s\n\nPlease grant them for best results.</string>
     <string name="device_admin_enabled">Device administration enabled</string>
     <string name="device_admin_disabled">Device administration disabled</string>
-    <string name="device_admin_explanation">Enabling device administration allows advanced features and robust background operation.</string>
+    <string name="device_admin_explanation">Enabling device administration allows robust background operation.</string>
 </resources>
