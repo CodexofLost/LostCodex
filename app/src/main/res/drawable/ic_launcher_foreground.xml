@@ -1,52 +1,134 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24">
-  <group android:scaleX="0.49836734"
-      android:scaleY="0.49836734"
-      android:translateX="6.019592"
-      android:translateY="5.5765986">
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+  <group android:scaleX="0.594"
+      android:scaleY="0.594"
+      android:translateX="207.872"
+      android:translateY="219.136">
 
-      <!-- Modified ultra-smooth rounded location marker outline -->
-      <path
-          android:strokeColor="#292D32"
-          android:strokeWidth="1.5"
-          android:fillColor="@android:color/transparent"
-          android:strokeLineCap="round"
-          android:strokeLineJoin="round"
-          android:pathData="
-              M12,23
-              C11.4,22.7 10.8,22.2 10.4,21.8
-              C6.4,17.6 3.3,12.2 5.2,7.6
-              C6.5,4.6 9.1,2.8 12,2.8
-              C14.9,2.8 17.5,4.6 18.8,7.6
-              C20.7,12.2 17.6,17.6 13.6,21.8
-              C13.2,22.2 12.6,22.7 12,23
-              Z" />
+  <!--
+      Segmented angular location-pin (no bullseye) in a neon purple -> pink linear gradient.
+      Each polygon from the SVG has been converted to a <path> with the same coordinates.
+      The gradient is defined inline using aapt:attr so Android Studio will render it correctly.
+  -->
 
-      <!-- Smooth red outer circle, centered at (12,9.25) -->
-      <path
-          android:strokeColor="#FF0000"
-          android:strokeWidth="1.5"
-          android:fillColor="@android:color/transparent"
-          android:strokeLineCap="round"
-          android:strokeLineJoin="round"
-          android:pathData="
-              M12,9.25
-              m-2.75,0
-              a2.75,2.75 0 1 0 5.5,0
-              a2.75,2.75 0 1 0 -5.5,0
-              z"/>
+  <!-- Gradient definition (applied per-path via aapt:attr) -->
+  <!-- We'll reuse the same gradient for every path so the overall object appears as a single blended shape. -->
 
-      <!-- Small filled red circle at (12,9.25) -->
-      <path
-          android:fillColor="#FF0000"
-          android:pathData="
-              M12,9.25
-              m-0.75,0
-              a0.75,0.75 0 1 0 1.5,0
-              a0.75,0.75 0 1 0 -1.5,0
-              z"/>
+  <!-- Upper-left segment -->
+  <path
+      android:pathData="M512,160 L392,220 L452,300 L512,260 Z">
+      <aapt:attr name="android:fillColor">
+          <gradient
+              android:type="linear"
+              android:startX="0"
+              android:startY="0"
+              android:endX="1024"
+              android:endY="1024">
+              <item android:offset="0.0" android:color="#A64DFF" />
+              <item android:offset="1.0" android:color="#FF2FBF" />
+          </gradient>
+      </aapt:attr>
+  </path>
+
+  <!-- Upper-right segment -->
+  <path
+      android:pathData="M512,160 L632,220 L572,300 L512,260 Z">
+      <aapt:attr name="android:fillColor">
+          <gradient
+              android:type="linear"
+              android:startX="0"
+              android:startY="0"
+              android:endX="1024"
+              android:endY="1024">
+              <item android:offset="0.0" android:color="#A64DFF" />
+              <item android:offset="1.0" android:color="#FF2FBF" />
+          </gradient>
+      </aapt:attr>
+  </path>
+
+  <!-- Left side segment -->
+  <path
+      android:pathData="M392,220 L332,340 L392,440 L452,300 Z">
+      <aapt:attr name="android:fillColor">
+          <gradient
+              android:type="linear"
+              android:startX="0"
+              android:startY="0"
+              android:endX="1024"
+              android:endY="1024">
+              <item android:offset="0.0" android:color="#A64DFF" />
+              <item android:offset="1.0" android:color="#FF2FBF" />
+          </gradient>
+      </aapt:attr>
+  </path>
+
+  <!-- Right side segment -->
+  <path
+      android:pathData="M632,220 L692,340 L632,440 L572,300 Z">
+      <aapt:attr name="android:fillColor">
+          <gradient
+              android:type="linear"
+              android:startX="0"
+              android:startY="0"
+              android:endX="1024"
+              android:endY="1024">
+              <item android:offset="0.0" android:color="#A64DFF" />
+              <item android:offset="1.0" android:color="#FF2FBF" />
+          </gradient>
+      </aapt:attr>
+  </path>
+
+  <!-- Bottom-left segment -->
+  <path
+      android:pathData="M392,440 L452,540 L512,500 L452,300 Z">
+      <aapt:attr name="android:fillColor">
+          <gradient
+              android:type="linear"
+              android:startX="0"
+              android:startY="0"
+              android:endX="1024"
+              android:endY="1024">
+              <item android:offset="0.0" android:color="#A64DFF" />
+              <item android:offset="1.0" android:color="#FF2FBF" />
+          </gradient>
+      </aapt:attr>
+  </path>
+
+  <!-- Bottom-right segment -->
+  <path
+      android:pathData="M632,440 L572,540 L512,500 L572,300 Z">
+      <aapt:attr name="android:fillColor">
+          <gradient
+              android:type="linear"
+              android:startX="0"
+              android:startY="0"
+              android:endX="1024"
+              android:endY="1024">
+              <item android:offset="0.0" android:color="#A64DFF" />
+              <item android:offset="1.0" android:color="#FF2FBF" />
+          </gradient>
+      </aapt:attr>
+  </path>
+
+  <!-- Bottom point segment -->
+  <path
+      android:pathData="M452,540 L572,540 L512,822 Z">
+      <aapt:attr name="android:fillColor">
+          <gradient
+              android:type="linear"
+              android:startX="0"
+              android:startY="0"
+              android:endX="1024"
+              android:endY="1024">
+              <item android:offset="0.0" android:color="#A64DFF" />
+              <item android:offset="1.0" android:color="#FF2FBF" />
+          </gradient>
+      </aapt:attr>
+  </path>
+
   </group>
 </vector>
