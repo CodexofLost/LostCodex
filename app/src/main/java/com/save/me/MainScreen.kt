@@ -173,7 +173,7 @@ fun MainScreen(
                 .padding(horizontal = 16.dp, vertical = 4.dp)
         ) {
             Text(
-                text = "Device Username",
+                text = "Username",
                 fontWeight = FontWeight.Bold,
                 fontSize = 17.sp,
                 modifier = Modifier.weight(1f)
@@ -208,7 +208,7 @@ fun MainScreen(
                 .padding(horizontal = 16.dp, vertical = 4.dp)
         ) {
             Text(
-                text = "Device Token",
+                text = "Bot Token",
                 fontWeight = FontWeight.Bold,
                 fontSize = 17.sp,
                 modifier = Modifier.weight(1f)

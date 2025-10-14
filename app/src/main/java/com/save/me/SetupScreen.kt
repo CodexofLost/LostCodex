@@ -185,7 +185,7 @@ fun SetupScreen(
                     nickname = it
                     error = null
                 },
-                label = { Text("Device Nickname") },
+                label = { Text("Username") },
                 modifier = Modifier.fillMaxWidth(),
                 colors = OutlinedTextFieldDefaults.colors(
                     unfocusedContainerColor = MaterialTheme.colorScheme.surface,

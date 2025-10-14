@@ -62,7 +62,7 @@ fun PermissionAndMainScreen(
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("Findgram") },
+                    title = { Text("LostCodex") },
                     actions = {
                         var refreshAnimating by remember { mutableStateOf(false) }
                         var gearAnimating by remember { mutableStateOf(false) }
