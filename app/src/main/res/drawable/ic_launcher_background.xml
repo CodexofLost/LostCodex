@@ -1,0 +1,48 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+  <group android:scaleX="1.18"
+      android:scaleY="1.18"
+      android:translateX="-92.16"
+      android:translateY="-92.16">
+
+  <!-- Dark background gradient -->
+  <path android:pathData="M0,0h1024v1024h-1024z">
+      <aapt:attr name="android:fillColor">
+          <gradient
+              android:type="radial"
+              android:centerX="512"
+              android:centerY="512"
+              android:gradientRadius="800"
+              android:startColor="#0A0016"
+              android:endColor="#2A003F" />
+      </aapt:attr>
+  </path>
+
+  <!-- Neon border frame -->
+  <path android:pathData="M32,32h960v960h-960z M64,64h896v896h-896z" android:fillType="evenOdd">
+      <aapt:attr name="android:fillColor">
+          <gradient
+              android:type="linear"
+              android:startX="0"
+              android:startY="0"
+              android:endX="1024"
+              android:endY="1024">
+              <item android:offset="0.0" android:color="#A64DFF" />
+              <item android:offset="1.0" android:color="#FF2FBF" />
+          </gradient>
+      </aapt:attr>
+  </path>
+
+  <!-- Subtle grid lines -->
+  <path
+      android:pathData="M0,128h1024 M0,256h1024 M0,384h1024 M0,512h1024 M0,640h1024 M0,768h1024 M0,896h1024
+                        M128,0v1024 M256,0v1024 M384,0v1024 M512,0v1024 M640,0v1024 M768,0v1024 M896,0v1024"
+      android:strokeColor="#220033"
+      android:strokeWidth="2" />
+
+  </group>
+</vector>
